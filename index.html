@@ -511,6 +511,9 @@ const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2(-999, -999);
 let hoveredNode = null;
 let selectedNode = null;
+let gazeTarget = null;
+let gazeStart = 0;
+const GAZE_DWELL_MS = 1500;
 
 const infoPanel = document.getElementById('info-panel');
 const infoTitle = document.getElementById('info-title');
@@ -571,7 +574,16 @@ function hideInfo() {
 }
 
 function highlightNode(nodeId) {
-  if (hoveredNode === nodeId) return;
+  if (hoveredNode === nodeId) {
+    // Gaze dwell: auto-select after staring long enough
+    if (nodeId && nodeId !== selectedNode && gazeTarget === nodeId) {
+      if (performance.now() - gazeStart >= GAZE_DWELL_MS) {
+        selectedNode = nodeId;
+        showInfo(nodeId);
+      }
+    }
+    return;
+  }
   // Reset previous
   if (hoveredNode) {
     const prev = nodeMap.get(hoveredNode);
@@ -581,6 +593,9 @@ function highlightNode(nodeId) {
     }
   }
   hoveredNode = nodeId;
+  // Reset gaze timer
+  gazeTarget = nodeId;
+  gazeStart = performance.now();
   if (nodeId) {
     const n = nodeMap.get(nodeId);
     n.mesh.material.emissiveIntensity = 3.0;

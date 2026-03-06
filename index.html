@@ -225,7 +225,9 @@ scene.add(dirLight);
 
 // VR controllers
 const controller0 = renderer.xr.getController(0);
+const controller1 = renderer.xr.getController(1);
 scene.add(controller0);
+scene.add(controller1);
 const rayGeo = new THREE.BufferGeometry().setFromPoints([
   new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -8)
 ]);
@@ -234,6 +236,28 @@ const rayLine = new THREE.Line(rayGeo, new THREE.LineBasicMaterial({
 }));
 rayLine.visible = false;
 controller0.add(rayLine);
+
+// Two-handed pinch-to-zoom state
+const pinchState = { left: false, right: false, startDist: 0, startScale: 1, startMid: new THREE.Vector3(), startGroupPos: new THREE.Vector3() };
+const _c0Pos = new THREE.Vector3();
+const _c1Pos = new THREE.Vector3();
+const _midPos = new THREE.Vector3();
+
+controller0.addEventListener('selectstart', () => { pinchState.right = true; startTwoHandGesture(); });
+controller1.addEventListener('selectstart', () => { pinchState.left = true; startTwoHandGesture(); });
+controller1.addEventListener('selectend',   () => { pinchState.left = false; });
+
+function startTwoHandGesture() {
+  if (pinchState.left && pinchState.right) {
+    controller0.getWorldPosition(_c0Pos);
+    controller1.getWorldPosition(_c1Pos);
+    pinchState.startDist = _c0Pos.distanceTo(_c1Pos);
+    pinchState.startScale = graphGroup.scale.x;
+    _midPos.lerpVectors(_c0Pos, _c1Pos, 0.5);
+    pinchState.startMid.copy(_midPos);
+    pinchState.startGroupPos.copy(graphGroup.position);
+  }
+}
 
 renderer.xr.addEventListener('sessionstart', () => {
   controls.enabled = false;
@@ -579,8 +603,11 @@ window.addEventListener('click', () => {
   }
 });
 
-// VR controller select
-controller0.addEventListener('selectstart', () => {
+// VR controller0 selectend: pinch state + node selection (skip if two-hand zoom)
+controller0.addEventListener('selectend', () => {
+  const wasTwoHand = pinchState.left && pinchState.right;
+  pinchState.right = false;
+  if (wasTwoHand) return;
   if (hoveredNode) {
     if (selectedNode === hoveredNode) {
       selectedNode = null;
@@ -679,6 +706,20 @@ function animate() {
     controls.update();
     composer.render();
   } else {
+    // Two-handed pinch-to-zoom + drag
+    if (pinchState.left && pinchState.right && pinchState.startDist > 0.01) {
+      controller0.getWorldPosition(_c0Pos);
+      controller1.getWorldPosition(_c1Pos);
+      const curDist = _c0Pos.distanceTo(_c1Pos);
+      const scale = Math.min(Math.max(pinchState.startScale * (curDist / pinchState.startDist), 0.2), 5);
+      graphGroup.scale.setScalar(scale);
+      // Drag: move graph to follow midpoint
+      _midPos.lerpVectors(_c0Pos, _c1Pos, 0.5);
+      graphGroup.position.copy(pinchState.startGroupPos).add(
+        _midPos.clone().sub(pinchState.startMid)
+      );
+    }
+
     // VR raycasting from controller
     const tempMatrix = new THREE.Matrix4();
     tempMatrix.identity().extractRotation(controller0.matrixWorld);

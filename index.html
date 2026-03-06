@@ -231,11 +231,13 @@ scene.add(controller1);
 const rayGeo = new THREE.BufferGeometry().setFromPoints([
   new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -8)
 ]);
-const rayLine = new THREE.Line(rayGeo, new THREE.LineBasicMaterial({
-  color: 0x00fff2, transparent: true, opacity: 0.4
-}));
-rayLine.visible = false;
-controller0.add(rayLine);
+const rayMat = new THREE.LineBasicMaterial({ color: 0x00fff2, transparent: true, opacity: 0.4 });
+const rayLine0 = new THREE.Line(rayGeo, rayMat);
+const rayLine1 = new THREE.Line(rayGeo.clone(), rayMat.clone());
+rayLine0.visible = false;
+rayLine1.visible = false;
+controller0.add(rayLine0);
+controller1.add(rayLine1);
 
 // Two-handed pinch-to-zoom state
 const pinchState = { left: false, right: false, startDist: 0, startScale: 1, startMid: new THREE.Vector3(), startGroupPos: new THREE.Vector3() };
@@ -245,7 +247,6 @@ const _midPos = new THREE.Vector3();
 
 controller0.addEventListener('selectstart', () => { pinchState.right = true; startTwoHandGesture(); });
 controller1.addEventListener('selectstart', () => { pinchState.left = true; startTwoHandGesture(); });
-controller1.addEventListener('selectend',   () => { pinchState.left = false; });
 
 function startTwoHandGesture() {
   if (pinchState.left && pinchState.right) {
@@ -264,14 +265,16 @@ renderer.xr.addEventListener('sessionstart', () => {
   document.getElementById('hud').style.display = 'none';
   document.getElementById('scanlines').style.display = 'none';
   document.getElementById('vignette').style.display = 'none';
-  rayLine.visible = true;
+  rayLine0.visible = true;
+  rayLine1.visible = true;
 });
 renderer.xr.addEventListener('sessionend', () => {
   controls.enabled = true;
   document.getElementById('hud').style.display = '';
   document.getElementById('scanlines').style.display = '';
   document.getElementById('vignette').style.display = '';
-  rayLine.visible = false;
+  rayLine0.visible = false;
+  rayLine1.visible = false;
 });
 
 // ═══════════════════════════════════════════
@@ -603,10 +606,8 @@ window.addEventListener('click', () => {
   }
 });
 
-// VR controller0 selectend: pinch state + node selection (skip if two-hand zoom)
-controller0.addEventListener('selectend', () => {
-  const wasTwoHand = pinchState.left && pinchState.right;
-  pinchState.right = false;
+// VR node selection on pinch release (skip if two-hand zoom)
+function vrSelectNode(wasTwoHand) {
   if (wasTwoHand) return;
   if (hoveredNode) {
     if (selectedNode === hoveredNode) {
@@ -620,6 +621,16 @@ controller0.addEventListener('selectend', () => {
     selectedNode = null;
     hideInfo();
   }
+}
+controller0.addEventListener('selectend', () => {
+  const wasTwoHand = pinchState.left && pinchState.right;
+  pinchState.right = false;
+  vrSelectNode(wasTwoHand);
+});
+controller1.addEventListener('selectend', () => {
+  const wasTwoHand = pinchState.left && pinchState.right;
+  pinchState.left = false;
+  vrSelectNode(wasTwoHand);
 });
 
 // ═══════════════════════════════════════════
@@ -720,14 +731,20 @@ function animate() {
       );
     }
 
-    // VR raycasting from controller
+    // VR raycasting from both controllers, pick closest hit
     const tempMatrix = new THREE.Matrix4();
-    tempMatrix.identity().extractRotation(controller0.matrixWorld);
-    raycaster.ray.origin.setFromMatrixPosition(controller0.matrixWorld);
-    raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
-    const hits = raycaster.intersectObjects(nodeMeshes, false);
-    if (hits.length > 0) {
-      highlightNode(hits[0].object.userData.nodeId);
+    let bestHit = null;
+    for (const ctrl of [controller0, controller1]) {
+      tempMatrix.identity().extractRotation(ctrl.matrixWorld);
+      raycaster.ray.origin.setFromMatrixPosition(ctrl.matrixWorld);
+      raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+      const hits = raycaster.intersectObjects(nodeMeshes, false);
+      if (hits.length > 0 && (!bestHit || hits[0].distance < bestHit.distance)) {
+        bestHit = hits[0];
+      }
+    }
+    if (bestHit) {
+      highlightNode(bestHit.object.userData.nodeId);
     } else {
       if (!selectedNode) highlightNode(null);
     }

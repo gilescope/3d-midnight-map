@@ -1,0 +1,670 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MIDNIGHT // 3D Architecture Map</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap');
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #050510; color: #00fff2; font-family: 'Share Tech Mono', monospace; overflow: hidden; }
+    canvas { display: block; }
+
+    #hud {
+      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      pointer-events: none; z-index: 10;
+    }
+    #title {
+      position: absolute; top: 20px; left: 20px;
+      font-family: 'Orbitron', sans-serif; font-weight: 900; font-size: 24px;
+      letter-spacing: 4px; text-transform: uppercase;
+      color: #00fff2; text-shadow: 0 0 10px #00fff2, 0 0 30px #00fff266;
+    }
+    #title span { color: #ff00ff; text-shadow: 0 0 10px #ff00ff, 0 0 30px #ff00ff66; }
+    #subtitle {
+      position: absolute; top: 54px; left: 20px;
+      font-size: 11px; letter-spacing: 6px; color: #00fff266; text-transform: uppercase;
+    }
+    #legend {
+      position: absolute; bottom: 20px; left: 20px; font-size: 12px; line-height: 22px;
+    }
+    .legend-item { display: flex; align-items: center; gap: 8px; opacity: 0.7; }
+    .legend-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      box-shadow: 0 0 6px currentColor;
+    }
+    #info-panel {
+      position: absolute; top: 50%; right: 30px; transform: translateY(-50%);
+      background: rgba(5,5,16,0.9); border: 1px solid #00fff233;
+      padding: 20px; font-size: 13px; max-width: 260px;
+      display: none; backdrop-filter: blur(10px); pointer-events: auto;
+      line-height: 1.6;
+    }
+    #info-panel h3 {
+      font-family: 'Orbitron', sans-serif; font-size: 14px;
+      margin-bottom: 8px; letter-spacing: 2px;
+    }
+    #info-layer { opacity: 0.6; font-size: 11px; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 2px; }
+    #info-desc { margin-bottom: 10px; }
+    #info-connections { opacity: 0.5; font-size: 11px; }
+
+    #scanlines {
+      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.03) 2px, rgba(0,0,0,0.03) 4px);
+      pointer-events: none; z-index: 20;
+    }
+    #vignette {
+      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      background: radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.6) 100%);
+      pointer-events: none; z-index: 15;
+    }
+    #VRButton {
+      font-family: 'Orbitron', sans-serif !important;
+      letter-spacing: 2px !important;
+    }
+  </style>
+</head>
+<body>
+
+<div id="hud">
+  <div id="title">MIDNIGHT <span>//</span> NETWORK</div>
+  <div id="subtitle">Architecture Map</div>
+  <div id="legend">
+    <div class="legend-item"><div class="legend-dot" style="color:#00fff2;background:#00fff2"></div> Core</div>
+    <div class="legend-item"><div class="legend-dot" style="color:#ff00ff;background:#ff00ff"></div> Zero Knowledge</div>
+    <div class="legend-item"><div class="legend-dot" style="color:#ffd700;background:#ffd700"></div> Chain Integration</div>
+    <div class="legend-item"><div class="legend-dot" style="color:#00ff88;background:#00ff88"></div> Application</div>
+    <div class="legend-item"><div class="legend-dot" style="color:#ff6600;background:#ff6600"></div> Data Services</div>
+  </div>
+  <div id="info-panel">
+    <h3 id="info-title"></h3>
+    <div id="info-layer"></div>
+    <div id="info-desc"></div>
+    <div id="info-connections"></div>
+  </div>
+</div>
+<div id="scanlines"></div>
+<div id="vignette"></div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { VRButton } from 'three/addons/webxr/VRButton.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+// ═══════════════════════════════════════════
+// GRAPH DATA
+// ═══════════════════════════════════════════
+
+const LAYERS = {
+  core:  { color: new THREE.Color(0x00fff2), hex: '#00fff2', name: 'Core Infrastructure' },
+  zk:    { color: new THREE.Color(0xff00ff), hex: '#ff00ff', name: 'Zero Knowledge' },
+  chain: { color: new THREE.Color(0xffd700), hex: '#ffd700', name: 'Chain Integration' },
+  app:   { color: new THREE.Color(0x00ff88), hex: '#00ff88', name: 'Application Layer' },
+  data:  { color: new THREE.Color(0xff6600), hex: '#ff6600', name: 'Data Services' },
+};
+
+const LAYER_SEED = {
+  core:  [0, 0, 0],
+  zk:    [-8, 2, -4],
+  chain: [8, -1, -4],
+  app:   [-2, 7, 4],
+  data:  [3, -7, 4],
+};
+
+const NODES = [
+  { id: 'node',     label: 'Midnight Node',    layer: 'core',  size: 1.8 },
+  { id: 'runtime',  label: 'WASM Runtime',     layer: 'core',  size: 1.0 },
+  { id: 'consensus',label: 'Consensus',        layer: 'core',  size: 1.0 },
+  { id: 'p2p',      label: 'P2P Network',      layer: 'core',  size: 0.9 },
+
+  { id: 'compact',  label: 'Compact',          layer: 'zk',    size: 1.4 },
+  { id: 'compiler', label: 'Compiler',         layer: 'zk',    size: 1.0 },
+  { id: 'prover',   label: 'Proof Server',     layer: 'zk',    size: 1.3 },
+  { id: 'circuits', label: 'Circuits',         layer: 'zk',    size: 0.9 },
+
+  { id: 'cardano',  label: 'Cardano',          layer: 'chain', size: 1.4 },
+  { id: 'partner',  label: 'Partner Chains',   layer: 'chain', size: 1.1 },
+  { id: 'bridge',   label: 'Shield / Unshield',layer: 'chain', size: 1.0 },
+
+  { id: 'dapp',     label: 'DApp Connector',   layer: 'app',   size: 1.0 },
+  { id: 'lace',     label: 'Lace Wallet',      layer: 'app',   size: 1.1 },
+  { id: 'sdk',      label: 'Midnight.js',      layer: 'app',   size: 1.0 },
+
+  { id: 'indexer',  label: 'Indexer',           layer: 'data',  size: 1.0 },
+  { id: 'graphql',  label: 'GraphQL API',      layer: 'data',  size: 0.9 },
+  { id: 'pubsub',  label: 'Pub/Sub',           layer: 'data',  size: 0.9 },
+];
+
+const EDGES = [
+  ['node','runtime'],   ['node','consensus'],  ['node','p2p'],
+  ['runtime','compact'],['compact','compiler'],['compiler','prover'],
+  ['compiler','circuits'],['prover','node'],
+  ['node','partner'],  ['partner','cardano'],
+  ['node','bridge'],   ['bridge','cardano'],
+  ['node','dapp'],     ['dapp','lace'],        ['dapp','sdk'],
+  ['node','indexer'],  ['indexer','graphql'],   ['indexer','pubsub'],
+  ['sdk','graphql'],
+];
+
+const DESCS = {
+  node:      'Core blockchain node built on Substrate. Processes transactions and maintains shielded state.',
+  runtime:   'WebAssembly execution environment for the state transition function.',
+  consensus: 'Block production and finality via Cardano-secured Partner Chains consensus.',
+  p2p:       'libp2p networking layer. Block propagation and transaction gossip.',
+  compact:   'Domain-specific ZK language for privacy-preserving smart contracts.',
+  compiler:  'Compiles Compact programs into zero-knowledge circuits.',
+  prover:    'Generates ZK proofs for shielded transactions and contract execution.',
+  circuits:  'Pre-built circuit library for common cryptographic operations.',
+  cardano:   'Cardano mainchain providing security and cross-chain interoperability.',
+  partner:   'Framework enabling Midnight to leverage Cardano security guarantees.',
+  bridge:    'Token bridge between Midnight and Cardano via shield/unshield operations.',
+  dapp:      'Browser extension bridge connecting web apps to the Midnight network.',
+  lace:      'Lace wallet integration for managing Midnight assets.',
+  sdk:       'TypeScript SDK for building applications on Midnight.',
+  indexer:   'Chain indexing service for efficient querying of on-chain data.',
+  graphql:   'Structured query endpoint over indexed chain data.',
+  pubsub:    'Real-time subscription system for chain state changes.',
+};
+
+// ═══════════════════════════════════════════
+// THREE.JS SETUP
+// ═══════════════════════════════════════════
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x050510, 0.018);
+
+const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 200);
+camera.position.set(0, 8, 22);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.2;
+renderer.xr.enabled = true;
+document.body.appendChild(renderer.domElement);
+
+// VR button
+document.body.appendChild(VRButton.createButton(renderer));
+
+// Orbit controls
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.3;
+controls.minDistance = 5;
+controls.maxDistance = 60;
+controls.target.set(0, 0, 0);
+
+// Post-processing (bloom for non-VR)
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 1.5, 0.4, 0.2);
+composer.addPass(bloom);
+
+// Lights
+scene.add(new THREE.AmbientLight(0x111122, 0.5));
+const dirLight = new THREE.DirectionalLight(0x334466, 0.3);
+dirLight.position.set(5, 10, 5);
+scene.add(dirLight);
+
+// VR controllers
+const controller0 = renderer.xr.getController(0);
+scene.add(controller0);
+const rayGeo = new THREE.BufferGeometry().setFromPoints([
+  new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -8)
+]);
+const rayLine = new THREE.Line(rayGeo, new THREE.LineBasicMaterial({
+  color: 0x00fff2, transparent: true, opacity: 0.4
+}));
+rayLine.visible = false;
+controller0.add(rayLine);
+
+renderer.xr.addEventListener('sessionstart', () => {
+  controls.enabled = false;
+  document.getElementById('hud').style.display = 'none';
+  document.getElementById('scanlines').style.display = 'none';
+  document.getElementById('vignette').style.display = 'none';
+  rayLine.visible = true;
+});
+renderer.xr.addEventListener('sessionend', () => {
+  controls.enabled = true;
+  document.getElementById('hud').style.display = '';
+  document.getElementById('scanlines').style.display = '';
+  document.getElementById('vignette').style.display = '';
+  rayLine.visible = false;
+});
+
+// ═══════════════════════════════════════════
+// TEXTURES
+// ═══════════════════════════════════════════
+
+function makeGlowTexture() {
+  const s = 128, c = document.createElement('canvas');
+  c.width = c.height = s;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(s/2, s/2, 0, s/2, s/2, s/2);
+  g.addColorStop(0, 'rgba(255,255,255,0.8)');
+  g.addColorStop(0.15, 'rgba(255,255,255,0.3)');
+  g.addColorStop(0.5, 'rgba(255,255,255,0.05)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, s, s);
+  return new THREE.CanvasTexture(c);
+}
+
+function makeLabelTexture(text, hexColor) {
+  const c = document.createElement('canvas');
+  c.width = 512; c.height = 64;
+  const ctx = c.getContext('2d');
+  ctx.font = 'bold 28px Orbitron, monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = hexColor;
+  ctx.shadowColor = hexColor;
+  ctx.shadowBlur = 8;
+  ctx.fillText(text, 256, 32);
+  return new THREE.CanvasTexture(c);
+}
+
+const glowTex = makeGlowTexture();
+
+// ═══════════════════════════════════════════
+// BUILD GRAPH
+// ═══════════════════════════════════════════
+
+const nodeMap = new Map();
+const nodeMeshes = [];
+const graphGroup = new THREE.Group();
+scene.add(graphGroup);
+
+// Create nodes
+for (const n of NODES) {
+  const layer = LAYERS[n.layer];
+  const seed = LAYER_SEED[n.layer];
+  const sz = n.size || 1;
+
+  // Position: seeded near layer center
+  const pos = new THREE.Vector3(
+    seed[0] + (Math.random() - 0.5) * 4,
+    seed[1] + (Math.random() - 0.5) * 4,
+    seed[2] + (Math.random() - 0.5) * 4
+  );
+
+  // Icosahedron mesh
+  const geo = new THREE.IcosahedronGeometry(sz * 0.5, sz > 1.3 ? 1 : 0);
+  const mat = new THREE.MeshStandardMaterial({
+    color: layer.color,
+    emissive: layer.color,
+    emissiveIntensity: 1.5,
+    metalness: 0.8,
+    roughness: 0.2,
+    transparent: true,
+    opacity: 0.9,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.copy(pos);
+  graphGroup.add(mesh);
+
+  // Glow sprite
+  const glowMat = new THREE.SpriteMaterial({
+    map: glowTex, color: layer.color,
+    transparent: true, opacity: 0.6,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  const glow = new THREE.Sprite(glowMat);
+  glow.scale.setScalar(sz * 3);
+  mesh.add(glow);
+
+  // Label sprite
+  const labelTex = makeLabelTexture(n.label, layer.hex);
+  const labelMat = new THREE.SpriteMaterial({
+    map: labelTex, transparent: true, depthTest: false,
+  });
+  const label = new THREE.Sprite(labelMat);
+  label.scale.set(4, 0.5, 1);
+  label.position.y = sz * 0.5 + 0.6;
+  mesh.add(label);
+
+  const entry = {
+    ...n, pos, vel: new THREE.Vector3(), mesh, glow,
+    phase: Math.random() * Math.PI * 2,
+  };
+  nodeMap.set(n.id, entry);
+  nodeMeshes.push(mesh);
+  mesh.userData = { nodeId: n.id };
+}
+
+// Create edges
+const edgeData = [];
+const edgeGroup = new THREE.Group();
+graphGroup.add(edgeGroup);
+
+for (const [srcId, tgtId] of EDGES) {
+  const src = nodeMap.get(srcId), tgt = nodeMap.get(tgtId);
+  const srcColor = LAYERS[src.layer].color;
+  const tgtColor = LAYERS[tgt.layer].color;
+
+  // Line
+  const geo = new THREE.BufferGeometry();
+  const positions = new Float32Array(6);
+  const colors = new Float32Array(6);
+  srcColor.toArray(colors, 0);
+  tgtColor.toArray(colors, 3);
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+  const mat = new THREE.LineBasicMaterial({
+    vertexColors: true, transparent: true, opacity: 0.35,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  const line = new THREE.Line(geo, mat);
+  edgeGroup.add(line);
+
+  edgeData.push({
+    src, tgt, line, geo,
+    srcColor: srcColor.clone(), tgtColor: tgtColor.clone(),
+    speed: 0.2 + Math.random() * 0.3,
+    phaseOffsets: [Math.random(), Math.random(), Math.random()],
+  });
+}
+
+// Edge flow particles (InstancedMesh)
+const PARTICLES_PER_EDGE = 3;
+const particleCount = EDGES.length * PARTICLES_PER_EDGE;
+const pGeo = new THREE.SphereGeometry(0.06, 6, 6);
+const pMat = new THREE.MeshBasicMaterial({
+  color: 0xffffff, transparent: true, opacity: 0.9,
+  blending: THREE.AdditiveBlending, depthWrite: false,
+});
+const particles = new THREE.InstancedMesh(pGeo, pMat, particleCount);
+particles.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+graphGroup.add(particles);
+
+// ═══════════════════════════════════════════
+// ENVIRONMENT
+// ═══════════════════════════════════════════
+
+// Ground grid
+const grid = new THREE.GridHelper(80, 80, 0x00fff2, 0x00fff2);
+grid.material.opacity = 0.06;
+grid.material.transparent = true;
+grid.material.depthWrite = false;
+grid.position.y = -12;
+scene.add(grid);
+
+// Second grid overlay for depth
+const grid2 = new THREE.GridHelper(80, 20, 0xff00ff, 0xff00ff);
+grid2.material.opacity = 0.03;
+grid2.material.transparent = true;
+grid2.material.depthWrite = false;
+grid2.position.y = -12.01;
+scene.add(grid2);
+
+// Background stars
+function makeStars(count, radius) {
+  const geo = new THREE.BufferGeometry();
+  const pos = new Float32Array(count * 3);
+  for (let i = 0; i < count * 3; i += 3) {
+    const r = radius * (0.3 + Math.random() * 0.7);
+    const theta = Math.random() * Math.PI * 2;
+    const phi = Math.acos(2 * Math.random() - 1);
+    pos[i]   = r * Math.sin(phi) * Math.cos(theta);
+    pos[i+1] = r * Math.sin(phi) * Math.sin(theta);
+    pos[i+2] = r * Math.cos(phi);
+  }
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  return geo;
+}
+
+const stars1 = new THREE.Points(makeStars(1500, 80),
+  new THREE.PointsMaterial({ color: 0x00fff2, size: 0.15, transparent: true, opacity: 0.4, depthWrite: false })
+);
+const stars2 = new THREE.Points(makeStars(800, 90),
+  new THREE.PointsMaterial({ color: 0xff00ff, size: 0.1, transparent: true, opacity: 0.25, depthWrite: false })
+);
+scene.add(stars1, stars2);
+
+// ═══════════════════════════════════════════
+// FORCE LAYOUT
+// ═══════════════════════════════════════════
+
+const allNodes = [...nodeMap.values()];
+const repulsion = 40, attraction = 0.04, centering = 0.008, damping = 0.85, minDist = 0.5;
+const _diff = new THREE.Vector3();
+
+function forceStep() {
+  // Repulsion
+  for (let i = 0; i < allNodes.length; i++) {
+    for (let j = i + 1; j < allNodes.length; j++) {
+      const a = allNodes[i], b = allNodes[j];
+      _diff.subVectors(a.pos, b.pos);
+      const d = Math.max(_diff.length(), minDist);
+      const f = repulsion / (d * d);
+      _diff.normalize().multiplyScalar(f);
+      a.vel.add(_diff);
+      b.vel.sub(_diff);
+    }
+  }
+  // Attraction along edges
+  for (const [srcId, tgtId] of EDGES) {
+    const s = nodeMap.get(srcId), t = nodeMap.get(tgtId);
+    _diff.subVectors(t.pos, s.pos);
+    const d = _diff.length();
+    const f = attraction * (d - 4);
+    _diff.normalize().multiplyScalar(f);
+    s.vel.add(_diff);
+    t.vel.sub(_diff);
+  }
+  // Centering
+  for (const n of allNodes) {
+    n.vel.add(_diff.copy(n.pos).negate().multiplyScalar(centering));
+    n.vel.multiplyScalar(damping);
+    n.pos.add(n.vel);
+  }
+}
+
+// Pre-simulate 300 steps
+for (let i = 0; i < 300; i++) forceStep();
+
+// ═══════════════════════════════════════════
+// INTERACTION
+// ═══════════════════════════════════════════
+
+const raycaster = new THREE.Raycaster();
+const pointer = new THREE.Vector2(-999, -999);
+let hoveredNode = null;
+let selectedNode = null;
+
+const infoPanel = document.getElementById('info-panel');
+const infoTitle = document.getElementById('info-title');
+const infoLayer = document.getElementById('info-layer');
+const infoDesc  = document.getElementById('info-desc');
+const infoConns = document.getElementById('info-connections');
+
+function showInfo(nodeId) {
+  const n = nodeMap.get(nodeId);
+  if (!n) return;
+  const layer = LAYERS[n.layer];
+  infoTitle.textContent = n.label;
+  infoTitle.style.color = layer.hex;
+  infoLayer.textContent = layer.name;
+  infoLayer.style.color = layer.hex;
+  infoDesc.textContent = DESCS[nodeId] || '';
+  // Find connections
+  const conns = EDGES
+    .filter(([s, t]) => s === nodeId || t === nodeId)
+    .map(([s, t]) => {
+      const other = s === nodeId ? t : s;
+      return nodeMap.get(other)?.label;
+    }).filter(Boolean);
+  infoConns.textContent = conns.length ? 'Connected: ' + conns.join(', ') : '';
+  infoPanel.style.display = 'block';
+  infoPanel.style.borderColor = layer.hex + '44';
+}
+
+function hideInfo() {
+  infoPanel.style.display = 'none';
+}
+
+function highlightNode(nodeId) {
+  if (hoveredNode === nodeId) return;
+  // Reset previous
+  if (hoveredNode) {
+    const prev = nodeMap.get(hoveredNode);
+    if (prev) {
+      prev.mesh.material.emissiveIntensity = 1.5;
+      prev.glow.material.opacity = 0.6;
+    }
+  }
+  hoveredNode = nodeId;
+  if (nodeId) {
+    const n = nodeMap.get(nodeId);
+    n.mesh.material.emissiveIntensity = 3.0;
+    n.glow.material.opacity = 1.0;
+    showInfo(nodeId);
+  } else if (!selectedNode) {
+    hideInfo();
+  }
+}
+
+window.addEventListener('pointermove', (e) => {
+  pointer.x = (e.clientX / innerWidth) * 2 - 1;
+  pointer.y = -(e.clientY / innerHeight) * 2 + 1;
+});
+
+window.addEventListener('click', () => {
+  if (hoveredNode) {
+    selectedNode = selectedNode === hoveredNode ? null : hoveredNode;
+    if (!selectedNode) hideInfo();
+  } else {
+    selectedNode = null;
+    hideInfo();
+  }
+});
+
+// VR controller select
+controller0.addEventListener('selectstart', () => {
+  if (hoveredNode) {
+    selectedNode = selectedNode === hoveredNode ? null : hoveredNode;
+  }
+});
+
+// ═══════════════════════════════════════════
+// ANIMATION LOOP
+// ═══════════════════════════════════════════
+
+const clock = new THREE.Clock();
+const dummy = new THREE.Object3D();
+
+function animate() {
+  const t = clock.getElapsedTime();
+  const dt = Math.min(clock.getDelta(), 0.05);
+
+  // Gentle force simulation (keeps graph alive)
+  if (t < 30) forceStep(); // settle then stop
+
+  // Update node positions + floating bob
+  for (const n of allNodes) {
+    n.mesh.position.copy(n.pos);
+    n.mesh.position.y += Math.sin(t * 0.5 + n.phase) * 0.15;
+    n.mesh.rotation.y = t * 0.2 + n.phase;
+    n.mesh.rotation.x = Math.sin(t * 0.3 + n.phase) * 0.1;
+    // Pulse glow
+    n.glow.material.opacity = 0.5 + 0.15 * Math.sin(t * 1.5 + n.phase);
+  }
+
+  // Update edge lines
+  for (const e of edgeData) {
+    const pa = e.geo.attributes.position.array;
+    e.src.mesh.getWorldPosition(_diff);
+    pa[0] = _diff.x; pa[1] = _diff.y; pa[2] = _diff.z;
+    e.tgt.mesh.getWorldPosition(_diff);
+    pa[3] = _diff.x; pa[4] = _diff.y; pa[5] = _diff.z;
+    e.geo.attributes.position.needsUpdate = true;
+    // Pulse opacity
+    e.line.material.opacity = 0.25 + 0.1 * Math.sin(t * 2 + e.phaseOffsets[0] * 10);
+  }
+
+  // Update edge particles
+  let idx = 0;
+  const _a = new THREE.Vector3(), _b = new THREE.Vector3();
+  for (const e of edgeData) {
+    e.src.mesh.getWorldPosition(_a);
+    e.tgt.mesh.getWorldPosition(_b);
+    for (let p = 0; p < PARTICLES_PER_EDGE; p++) {
+      const phase = ((t * e.speed + e.phaseOffsets[p]) % 1 + 1) % 1;
+      dummy.position.lerpVectors(_a, _b, phase);
+      const fadeEdge = Math.sin(phase * Math.PI);
+      dummy.scale.setScalar(0.4 + 0.6 * fadeEdge);
+      dummy.updateMatrix();
+      particles.setMatrixAt(idx, dummy.matrix);
+      idx++;
+    }
+  }
+  particles.instanceMatrix.needsUpdate = true;
+
+  // Rotate stars slowly
+  stars1.rotation.y = t * 0.005;
+  stars2.rotation.y = -t * 0.003;
+
+  // Move grid for travel effect
+  grid.position.z = (t * 0.5) % 1;
+
+  // Raycasting (non-VR)
+  if (!renderer.xr.isPresenting) {
+    raycaster.setFromCamera(pointer, camera);
+    const hits = raycaster.intersectObjects(nodeMeshes, false);
+    if (hits.length > 0) {
+      highlightNode(hits[0].object.userData.nodeId);
+      document.body.style.cursor = 'pointer';
+    } else {
+      if (!selectedNode) highlightNode(null);
+      document.body.style.cursor = 'default';
+    }
+    controls.update();
+    composer.render();
+  } else {
+    // VR raycasting from controller
+    const tempMatrix = new THREE.Matrix4();
+    tempMatrix.identity().extractRotation(controller0.matrixWorld);
+    raycaster.ray.origin.setFromMatrixPosition(controller0.matrixWorld);
+    raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+    const hits = raycaster.intersectObjects(nodeMeshes, false);
+    if (hits.length > 0) {
+      highlightNode(hits[0].object.userData.nodeId);
+    } else {
+      if (!selectedNode) highlightNode(null);
+    }
+    renderer.render(scene, camera);
+  }
+}
+
+renderer.setAnimationLoop(animate);
+
+// ═══════════════════════════════════════════
+// RESIZE
+// ═══════════════════════════════════════════
+
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  composer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

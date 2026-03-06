@@ -491,16 +491,32 @@ const infoLayer = document.getElementById('info-layer');
 const infoDesc  = document.getElementById('info-desc');
 const infoConns = document.getElementById('info-connections');
 
+// VR 3D info panel (troika text attached to scene)
+const vrInfoText = new Text();
+vrInfoText.fontSize = 0.18;
+vrInfoText.color = '#00fff2';
+vrInfoText.anchorX = 'left';
+vrInfoText.anchorY = 'top';
+vrInfoText.maxWidth = 3;
+vrInfoText.outlineWidth = '6%';
+vrInfoText.outlineColor = 0x000000;
+vrInfoText.outlineOpacity = 0.8;
+vrInfoText.depthOffset = -1;
+vrInfoText.font = 'https://fonts.gstatic.com/s/orbitron/v31/yMJRMIlzdpvBhQQL_Qq7dy0.woff2';
+vrInfoText.visible = false;
+scene.add(vrInfoText);
+
 function showInfo(nodeId) {
   const n = nodeMap.get(nodeId);
   if (!n) return;
   const layer = LAYERS[n.layer];
+
+  // HTML panel (non-VR)
   infoTitle.textContent = n.label;
   infoTitle.style.color = layer.hex;
   infoLayer.textContent = layer.name;
   infoLayer.style.color = layer.hex;
   infoDesc.textContent = DESCS[nodeId] || '';
-  // Find connections
   const conns = EDGES
     .filter(([s, t]) => s === nodeId || t === nodeId)
     .map(([s, t]) => {
@@ -510,10 +526,21 @@ function showInfo(nodeId) {
   infoConns.textContent = conns.length ? 'Connected: ' + conns.join(', ') : '';
   infoPanel.style.display = 'block';
   infoPanel.style.borderColor = layer.hex + '44';
+
+  // VR 3D panel
+  if (renderer.xr.isPresenting) {
+    const lines = [n.label, layer.name, '', DESCS[nodeId] || ''];
+    if (conns.length) lines.push('', 'Connected: ' + conns.join(', '));
+    vrInfoText.text = lines.join('\n');
+    vrInfoText.color = layer.hex;
+    vrInfoText.visible = true;
+    vrInfoText.sync();
+  }
 }
 
 function hideInfo() {
   infoPanel.style.display = 'none';
+  vrInfoText.visible = false;
 }
 
 function highlightNode(nodeId) {
@@ -555,7 +582,16 @@ window.addEventListener('click', () => {
 // VR controller select
 controller0.addEventListener('selectstart', () => {
   if (hoveredNode) {
-    selectedNode = selectedNode === hoveredNode ? null : hoveredNode;
+    if (selectedNode === hoveredNode) {
+      selectedNode = null;
+      hideInfo();
+    } else {
+      selectedNode = hoveredNode;
+      showInfo(hoveredNode);
+    }
+  } else {
+    selectedNode = null;
+    hideInfo();
   }
 });
 
@@ -653,6 +689,16 @@ function animate() {
       highlightNode(hits[0].object.userData.nodeId);
     } else {
       if (!selectedNode) highlightNode(null);
+    }
+    // Position VR info panel near selected node, facing camera
+    if (vrInfoText.visible && selectedNode) {
+      const sn = nodeMap.get(selectedNode);
+      if (sn) {
+        sn.mesh.getWorldPosition(vrInfoText.position);
+        vrInfoText.position.x += sn.size * 0.5 + 0.4;
+        vrInfoText.position.y += sn.size * 0.3;
+        vrInfoText.quaternion.copy(camera.quaternion);
+      }
     }
     renderer.render(scene, camera);
   }

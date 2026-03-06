@@ -90,7 +90,8 @@
 {
   "imports": {
     "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
-    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+    "troika-three-text": "https://esm.sh/troika-three-text@0.49.1?external=three"
   }
 }
 </script>
@@ -102,6 +103,7 @@ import { VRButton } from 'three/addons/webxr/VRButton.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { Text } from 'troika-three-text';
 
 // ═══════════════════════════════════════════
 // GRAPH DATA
@@ -266,20 +268,6 @@ function makeGlowTexture() {
   return new THREE.CanvasTexture(c);
 }
 
-function makeLabelTexture(text, hexColor) {
-  const c = document.createElement('canvas');
-  c.width = 512; c.height = 64;
-  const ctx = c.getContext('2d');
-  ctx.font = 'bold 28px Orbitron, monospace';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillStyle = hexColor;
-  ctx.shadowColor = hexColor;
-  ctx.shadowBlur = 8;
-  ctx.fillText(text, 256, 32);
-  return new THREE.CanvasTexture(c);
-}
-
 const glowTex = makeGlowTexture();
 
 // ═══════════════════════════════════════════
@@ -288,6 +276,7 @@ const glowTex = makeGlowTexture();
 
 const nodeMap = new Map();
 const nodeMeshes = [];
+const labelEntries = [];
 const graphGroup = new THREE.Group();
 scene.add(graphGroup);
 
@@ -329,15 +318,22 @@ for (const n of NODES) {
   glow.scale.setScalar(sz * 3);
   mesh.add(glow);
 
-  // Label sprite
-  const labelTex = makeLabelTexture(n.label, layer.hex);
-  const labelMat = new THREE.SpriteMaterial({
-    map: labelTex, transparent: true, depthTest: false,
-  });
-  const label = new THREE.Sprite(labelMat);
-  label.scale.set(4, 0.5, 1);
-  label.position.y = sz * 0.5 + 0.6;
+  // Label (troika SDF text - crisp at any distance in VR)
+  const label = new Text();
+  label.text = n.label;
+  label.fontSize = 0.28;
+  label.color = layer.hex;
+  label.anchorX = 'center';
+  label.anchorY = 'bottom';
+  label.position.y = sz * 0.5 + 0.5;
+  label.outlineWidth = '8%';
+  label.outlineColor = 0x000000;
+  label.outlineOpacity = 0.6;
+  label.depthOffset = -1;
+  label.font = 'https://fonts.gstatic.com/s/orbitron/v31/yMJRMIlzdpvBhQQL_Qq7dy0.woff2';
+  label.sync();
   mesh.add(label);
+  labelEntries.push({ label, mesh });
 
   const entry = {
     ...n, pos, vel: new THREE.Vector3(), mesh, glow,
@@ -569,6 +565,8 @@ controller0.addEventListener('selectstart', () => {
 
 const clock = new THREE.Clock();
 const dummy = new THREE.Object3D();
+const _camQuat = new THREE.Quaternion();
+const _parentQuat = new THREE.Quaternion();
 
 function animate() {
   const t = clock.getElapsedTime();
@@ -585,6 +583,13 @@ function animate() {
     n.mesh.rotation.x = Math.sin(t * 0.3 + n.phase) * 0.1;
     // Pulse glow
     n.glow.material.opacity = 0.5 + 0.15 * Math.sin(t * 1.5 + n.phase);
+  }
+
+  // Billboard labels to face camera
+  camera.getWorldQuaternion(_camQuat);
+  for (const { label, mesh } of labelEntries) {
+    mesh.getWorldQuaternion(_parentQuat).invert();
+    label.quaternion.copy(_camQuat).premultiply(_parentQuat);
   }
 
   // Update edge lines

@@ -228,8 +228,11 @@ const controller0 = renderer.xr.getController(0);
 const controller1 = renderer.xr.getController(1);
 scene.add(controller0);
 scene.add(controller1);
+// Pitch ray down 20 degrees to match natural hand angle on visionOS
+const RAY_PITCH = -20 * Math.PI / 180;
+const rayEnd = new THREE.Vector3(0, Math.sin(RAY_PITCH) * 8, Math.cos(RAY_PITCH) * -8);
 const rayGeo = new THREE.BufferGeometry().setFromPoints([
-  new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -8)
+  new THREE.Vector3(0, 0, 0), rayEnd
 ]);
 const rayMat = new THREE.LineBasicMaterial({ color: 0x00fff2, transparent: true, opacity: 0.4 });
 const rayLine0 = new THREE.Line(rayGeo, rayMat);
@@ -748,11 +751,12 @@ function animate() {
 
     // VR raycasting from both controllers, pick closest hit
     const tempMatrix = new THREE.Matrix4();
+    const rayDir = new THREE.Vector3(0, Math.sin(RAY_PITCH), Math.cos(RAY_PITCH) * -1);
     let bestHit = null;
     for (const ctrl of [controller0, controller1]) {
       tempMatrix.identity().extractRotation(ctrl.matrixWorld);
       raycaster.ray.origin.setFromMatrixPosition(ctrl.matrixWorld);
-      raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+      raycaster.ray.direction.copy(rayDir).applyMatrix4(tempMatrix);
       const hits = raycaster.intersectObjects(nodeMeshes, false);
       if (hits.length > 0 && (!bestHit || hits[0].distance < bestHit.distance)) {
         bestHit = hits[0];

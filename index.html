@@ -157,54 +157,16 @@ function parseMcshDigest(digestLogs) {
 function getOrCreateCardanoNode(hash) {
   if (cardanoBlocks.has(hash)) return cardanoBlocks.get(hash);
   const nodeId = 'cardano-' + hash.slice(0, 16);
-  const cb = {
-    hash, height: null, epoch: null, slot: null, txCount: null, pool: null,
-    nodeId, referencedBy: new Set(),
-  };
+  const cb = { hash, nodeId, referencedBy: new Set() };
   cardanoBlocks.set(hash, cb);
   const pos = new THREE.Vector3(0, CARDANO_Y_OFFSET, 0);
   addNode(nodeId, shortHash(hash), COLORS.cardano, HEX.cardano, 1.0, pos, {
-    type: 'cardano', cardanoHash: hash, height: null,
-    epoch: null, slot: null, txCount: null, pool: null,
+    type: 'cardano', cardanoHash: hash,
   });
   cardanoBlockList.push(cb);
-  cardanoBlockList.sort((a, b) => (b.height || 0) - (a.height || 0));
   repositionCardanoBlocks();
   updateSubtitle();
-  // Enrich with Koios data asynchronously
-  enrichCardanoBlock(hash, nodeId, cb);
   return cb;
-}
-
-async function enrichCardanoBlock(hash, nodeId, cb) {
-  try {
-    const resp = await fetch('https://preview.koios.rest/api/v1/block_info', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ _block_hashes: [hash] }),
-    });
-    const data = await resp.json();
-    console.log('Koios response for', hash.slice(0, 16), ':', Array.isArray(data) ? data.length + ' results' : typeof data, resp.status);
-    if (Array.isArray(data) && data.length > 0) {
-      const info = data[0];
-      cb.height = info.block_height;
-      cb.epoch = info.epoch_no;
-      cb.slot = info.abs_slot;
-      cb.txCount = info.tx_count;
-      cb.pool = info.pool;
-      // Update the node label and data
-      const entry = nodeMap.get(nodeId);
-      if (entry) {
-        Object.assign(entry, { height: cb.height, epoch: cb.epoch, slot: cb.slot, txCount: cb.txCount, pool: cb.pool });
-        const li = labelEntries.find(e => e.mesh === entry.mesh);
-        if (li) { li.label.text = 'C#' + cb.height; li.label.sync(); }
-      }
-      cardanoBlockList.sort((a, b) => (b.height || 0) - (a.height || 0));
-      repositionCardanoBlocks();
-    }
-  } catch (e) {
-    console.error('Koios error:', e);
-  }
 }
 
 function rpcCall(method, params = []) {
@@ -762,12 +724,9 @@ function showInfo(nodeId) {
     desc = 'Size: ' + n.extBytes + ' bytes' +
       '\nData: ' + (n.extHex ? n.extHex.slice(0, 40) + '...' : '?');
   } else if (n.type === 'cardano') {
-    title = 'Cardano #' + n.height;
-    layerName = 'Epoch ' + n.epoch;
-    desc = 'Hash: ' + shortHash(n.cardanoHash) +
-      '\nSlot: ' + n.slot +
-      '\nTransactions: ' + n.txCount +
-      (n.pool ? '\nPool: ' + shortHash(n.pool) : '');
+    title = 'Cardano Block';
+    layerName = 'Partner Chain';
+    desc = 'Hash: ' + shortHash(n.cardanoHash);
   }
 
   infoTitle.textContent = title;

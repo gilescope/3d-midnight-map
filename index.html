@@ -450,7 +450,7 @@ function addBlock(number, hash, extrinsics) {
   // Reposition all blocks along X axis
   repositionBlocks();
   rebuildAllEdges();
-  forceSettleSteps = 60;
+  forceSettleSteps = 150;
 }
 
 function repositionBlocks() {
@@ -564,7 +564,7 @@ scene.add(stars1, stars2);
 // ═══════════════════════════════════════════
 
 let forceSettleSteps = 0;
-const repulsion = 25, attraction = 0.06, damping = 0.85, minDist = 0.5;
+const repulsion = 15, attraction = 0.03, damping = 0.92, minDist = 0.5;
 const _diff = new THREE.Vector3();
 
 function forceStep() {
@@ -599,9 +599,9 @@ function forceStep() {
   // Block positioning force: pull blocks toward their target X, center Y/Z
   for (const n of allNodes) {
     if (n.targetX !== undefined) {
-      n.vel.x += (n.targetX - n.pos.x) * 0.15;
-      n.vel.y += (0 - n.pos.y) * 0.03;
-      n.vel.z += (0 - n.pos.z) * 0.03;
+      n.vel.x += (n.targetX - n.pos.x) * 0.05;
+      n.vel.y += (0 - n.pos.y) * 0.01;
+      n.vel.z += (0 - n.pos.z) * 0.01;
     }
     n.vel.multiplyScalar(damping);
     n.pos.add(n.vel);

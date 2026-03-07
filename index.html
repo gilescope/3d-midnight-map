@@ -97,6 +97,12 @@
 }
 </script>
 
+<script>
+// Surface any errors visually on mobile where dev tools aren't available
+window.onerror = (msg, src, line) => {
+  document.getElementById('subtitle').textContent = 'ERROR: ' + msg + ' (line ' + line + ')';
+};
+</script>
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -196,21 +202,26 @@ function shortHash(h) {
 // THREE.JS SETUP
 // ═══════════════════════════════════════════
 
+const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(0x050510, 0.004);
 
 const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 2000);
 camera.position.set(0, 10, 25);
 
-const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+const renderer = new THREE.WebGLRenderer({ antialias: !isMobile, alpha: false });
+if (!renderer.getContext()) {
+  document.getElementById('subtitle').textContent = 'WebGL not available';
+}
 renderer.setSize(innerWidth, innerHeight);
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setPixelRatio(Math.min(devicePixelRatio, isMobile ? 1.5 : 2));
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.2;
 renderer.xr.enabled = true;
 document.body.appendChild(renderer.domElement);
 
-document.body.appendChild(VRButton.createButton(renderer));
+if (!isMobile) document.body.appendChild(VRButton.createButton(renderer));
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
@@ -220,7 +231,6 @@ controls.minDistance = 5;
 controls.maxDistance = 80;
 controls.target.set(-15, 0, 0);
 
-const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 let composer = null;
 if (!isMobile) {
   composer = new EffectComposer(renderer);

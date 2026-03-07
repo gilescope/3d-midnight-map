@@ -440,13 +440,6 @@ function addBlock(number, hash, extrinsics) {
     for (const eid of extNodeIds) setNodeColor(eid, COLORS.extFinal, HEX.extFinal);
   }
 
-  // Remove old blocks beyond window
-  while (blockList.length > MAX_BLOCKS) {
-    const old = blockList.pop();
-    for (const eid of old.extNodeIds) removeNode(eid);
-    removeNode(old.nodeId);
-  }
-
   // Reposition all blocks along X axis
   repositionBlocks();
   rebuildAllEdges();

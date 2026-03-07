@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MIDNIGHT // P2P Network</title>
+  <title>MIDNIGHT // Block Explorer</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap');
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -38,7 +38,7 @@
       background: rgba(5,5,16,0.9); border: 1px solid #00fff233;
       padding: 20px; font-size: 13px; max-width: 300px;
       display: none; backdrop-filter: blur(10px); pointer-events: auto;
-      line-height: 1.6;
+      line-height: 1.6; white-space: pre-wrap;
     }
     #info-panel h3 {
       font-family: 'Orbitron', sans-serif; font-size: 14px;
@@ -67,11 +67,12 @@
 <body>
 
 <div id="hud">
-  <div id="title">MIDNIGHT <span>//</span> P2P</div>
+  <div id="title">MIDNIGHT <span>//</span> BLOCKS</div>
   <div id="subtitle">Connecting...</div>
   <div id="legend">
-    <div class="legend-item"><div class="legend-dot" style="color:#00fff2;background:#00fff2"></div> Local Node</div>
-    <div class="legend-item"><div class="legend-dot" style="color:#00ff88;background:#00ff88"></div> Peer</div>
+    <div class="legend-item"><div class="legend-dot" style="color:#00fff2;background:#00fff2"></div> Unfinalized Block</div>
+    <div class="legend-item"><div class="legend-dot" style="color:#ffd700;background:#ffd700"></div> Finalized Block</div>
+    <div class="legend-item"><div class="legend-dot" style="color:#ff00ff;background:#ff00ff"></div> Extrinsic</div>
   </div>
   <div id="info-panel">
     <h3 id="info-title"></h3>
@@ -103,27 +104,34 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { Text } from 'troika-three-text';
 
 // ═══════════════════════════════════════════
-// NETWORK DATA
+// CONSTANTS
 // ═══════════════════════════════════════════
 
-const LAYERS = {
-  local: { color: new THREE.Color(0x00fff2), hex: '#00fff2', name: 'Local Node' },
-  peer:  { color: new THREE.Color(0x00ff88), hex: '#00ff88', name: 'Peer' },
+const COLORS = {
+  block:     new THREE.Color(0x00fff2),
+  finalized: new THREE.Color(0xffd700),
+  extrinsic: new THREE.Color(0xff00ff),
+  extFinal:  new THREE.Color(0xffa500),
+};
+const HEX = {
+  block: '#00fff2', finalized: '#ffd700', extrinsic: '#ff00ff', extFinal: '#ffa500',
 };
 
-function shortId(peerId) {
-  if (!peerId) return '???';
-  return peerId.slice(0, 8) + '...' + peerId.slice(-4);
-}
-
 const RPC_URL = 'wss://rpc.preview.midnight.network';
+const MAX_BLOCKS = 12;
+const BLOCK_SPACING = 6;
+const ORBITRON_URL = 'https://fonts.gstatic.com/s/orbitron/v31/yMJRMIlzdpvBhQQL_Qq7dy0.woff2';
+
 let ws = null;
 let rpcId = 0;
 const rpcCallbacks = new Map();
-let localPeerId = null;
 let chainName = '';
-let nodeName = '';
-let nodeVersion = '';
+let lastFinalizedNumber = 0;
+
+// Block tracking: ordered newest-first
+const blockList = [];
+// { number, hash, extrinsics: [hex...], finalized, nodeId, extNodeIds: [...] }
+
 let edges = [];
 
 function rpcCall(method, params = []) {
@@ -142,15 +150,20 @@ function rpcCall(method, params = []) {
   });
 }
 
+function shortHash(h) {
+  if (!h) return '???';
+  return h.slice(0, 10) + '...' + h.slice(-6);
+}
+
 // ═══════════════════════════════════════════
 // THREE.JS SETUP
 // ═══════════════════════════════════════════
 
 const scene = new THREE.Scene();
-scene.fog = new THREE.FogExp2(0x050510, 0.018);
+scene.fog = new THREE.FogExp2(0x050510, 0.012);
 
 const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 200);
-camera.position.set(0, 8, 22);
+camera.position.set(0, 10, 25);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
 renderer.setSize(innerWidth, innerHeight);
@@ -160,26 +173,21 @@ renderer.toneMappingExposure = 1.2;
 renderer.xr.enabled = true;
 document.body.appendChild(renderer.domElement);
 
-// VR button
 document.body.appendChild(VRButton.createButton(renderer));
 
-// Orbit controls
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.05;
-controls.autoRotate = true;
-controls.autoRotateSpeed = 0.3;
+controls.autoRotate = false;
 controls.minDistance = 5;
-controls.maxDistance = 60;
-controls.target.set(0, 0, 0);
+controls.maxDistance = 80;
+controls.target.set(-15, 0, 0);
 
-// Post-processing (bloom for non-VR)
 const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
 const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 1.5, 0.4, 0.2);
 composer.addPass(bloom);
 
-// Lights
 scene.add(new THREE.AmbientLight(0x111122, 0.5));
 const dirLight = new THREE.DirectionalLight(0x334466, 0.3);
 dirLight.position.set(5, 10, 5);
@@ -190,12 +198,9 @@ const controller0 = renderer.xr.getController(0);
 const controller1 = renderer.xr.getController(1);
 scene.add(controller0);
 scene.add(controller1);
-// Pitch ray down to match natural hand angle on visionOS (+X = down in controller space)
 const RAY_PITCH = 20 * Math.PI / 180;
 const rayEnd = new THREE.Vector3(Math.sin(RAY_PITCH) * 8, 0, Math.cos(RAY_PITCH) * -8);
-const rayGeo = new THREE.BufferGeometry().setFromPoints([
-  new THREE.Vector3(0, 0, 0), rayEnd
-]);
+const rayGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), rayEnd]);
 const rayMat = new THREE.LineBasicMaterial({ color: 0x00fff2, transparent: true, opacity: 0.4 });
 const rayLine0 = new THREE.Line(rayGeo, rayMat);
 const rayLine1 = new THREE.Line(rayGeo.clone(), rayMat.clone());
@@ -204,7 +209,6 @@ rayLine1.visible = false;
 controller0.add(rayLine0);
 controller1.add(rayLine1);
 
-// Two-handed pinch-to-zoom state (driven by XR input sources each frame)
 const pinchState = { active: false, startDist: 0, startScale: 1, startMid: new THREE.Vector3(), startGroupPos: new THREE.Vector3() };
 const _c0Pos = new THREE.Vector3();
 const _c1Pos = new THREE.Vector3();
@@ -251,7 +255,6 @@ function makeGlowTexture() {
 }
 
 const glowTex = makeGlowTexture();
-const ORBITRON_URL = 'https://fonts.gstatic.com/s/orbitron/v31/yMJRMIlzdpvBhQQL_Qq7dy0.woff2';
 
 // ═══════════════════════════════════════════
 // DYNAMIC GRAPH
@@ -266,9 +269,8 @@ scene.add(graphGroup);
 const edgeGroup = new THREE.Group();
 graphGroup.add(edgeGroup);
 
-// Particles: pre-allocate for up to 300 edges
 const PARTICLES_PER_EDGE = 3;
-const MAX_PARTICLES = 300 * PARTICLES_PER_EDGE;
+const MAX_PARTICLES = 500 * PARTICLES_PER_EDGE;
 const pGeo = new THREE.SphereGeometry(0.06, 6, 6);
 const pMat = new THREE.MeshBasicMaterial({
   color: 0xffffff, transparent: true, opacity: 0.9,
@@ -279,24 +281,13 @@ particles.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
 particles.count = 0;
 graphGroup.add(particles);
 
-// Saved positions across updates (peer ID -> Vector3)
-const savedPositions = new Map();
-
-function addNode(id, label, layer, size, extraData) {
+function addNode(id, label, color, hex, size, pos, extraData) {
   if (nodeMap.has(id)) return;
-  const layerDef = LAYERS[layer] || LAYERS.unknown;
   const sz = size || 1;
-
-  const saved = savedPositions.get(id);
-  const pos = saved ? saved.clone() : new THREE.Vector3(
-    (Math.random() - 0.5) * 12,
-    (Math.random() - 0.5) * 12,
-    (Math.random() - 0.5) * 12
-  );
 
   const geo = new THREE.IcosahedronGeometry(sz * 0.5, sz > 1.3 ? 1 : 0);
   const mat = new THREE.MeshStandardMaterial({
-    color: layerDef.color, emissive: layerDef.color, emissiveIntensity: 1.5,
+    color, emissive: color, emissiveIntensity: 1.5,
     metalness: 0.8, roughness: 0.2, transparent: true, opacity: 0.9,
   });
   const mesh = new THREE.Mesh(geo, mat);
@@ -304,7 +295,7 @@ function addNode(id, label, layer, size, extraData) {
   graphGroup.add(mesh);
 
   const glowMaterial = new THREE.SpriteMaterial({
-    map: glowTex, color: layerDef.color,
+    map: glowTex, color,
     transparent: true, opacity: 0.6,
     blending: THREE.AdditiveBlending, depthWrite: false,
   });
@@ -314,11 +305,11 @@ function addNode(id, label, layer, size, extraData) {
 
   const textLabel = new Text();
   textLabel.text = label;
-  textLabel.fontSize = 0.28;
-  textLabel.color = layerDef.hex;
+  textLabel.fontSize = sz > 1 ? 0.32 : 0.22;
+  textLabel.color = hex;
   textLabel.anchorX = 'center';
   textLabel.anchorY = 'bottom';
-  textLabel.position.y = sz * 0.5 + 0.5;
+  textLabel.position.y = sz * 0.5 + 0.4;
   textLabel.outlineWidth = '8%';
   textLabel.outlineColor = 0x000000;
   textLabel.outlineOpacity = 0.6;
@@ -329,9 +320,9 @@ function addNode(id, label, layer, size, extraData) {
   labelEntries.push({ label: textLabel, mesh });
 
   const entry = {
-    id, label, layer, size: sz, pos, vel: new THREE.Vector3(),
+    id, label, size: sz, pos, vel: new THREE.Vector3(),
     mesh, glow, phase: Math.random() * Math.PI * 2,
-    ...extraData,
+    color, hex, ...extraData,
   };
   nodeMap.set(id, entry);
   nodeMeshes.push(mesh);
@@ -341,7 +332,6 @@ function addNode(id, label, layer, size, extraData) {
 function removeNode(id) {
   const entry = nodeMap.get(id);
   if (!entry) return;
-  savedPositions.set(id, entry.pos.clone());
   graphGroup.remove(entry.mesh);
   entry.mesh.geometry.dispose();
   entry.mesh.material.dispose();
@@ -352,8 +342,20 @@ function removeNode(id) {
   if (li >= 0) labelEntries.splice(li, 1);
 }
 
+function setNodeColor(id, color, hex) {
+  const entry = nodeMap.get(id);
+  if (!entry) return;
+  entry.color = color;
+  entry.hex = hex;
+  entry.mesh.material.color.copy(color);
+  entry.mesh.material.emissive.copy(color);
+  entry.glow.material.color.copy(color);
+  // Update label color
+  const li = labelEntries.find(e => e.mesh === entry.mesh);
+  if (li) li.label.color = hex;
+}
+
 function rebuildEdges() {
-  // Clear old edges
   for (const e of edgeData) {
     edgeGroup.remove(e.line);
     e.geo.dispose();
@@ -364,8 +366,8 @@ function rebuildEdges() {
   for (const [srcId, tgtId] of edges) {
     const src = nodeMap.get(srcId), tgt = nodeMap.get(tgtId);
     if (!src || !tgt) continue;
-    const srcColor = (LAYERS[src.layer] || LAYERS.unknown).color;
-    const tgtColor = (LAYERS[tgt.layer] || LAYERS.unknown).color;
+    const srcColor = src.color || COLORS.block;
+    const tgtColor = tgt.color || COLORS.block;
 
     const geo = new THREE.BufferGeometry();
     const positions = new Float32Array(6);
@@ -391,61 +393,143 @@ function rebuildEdges() {
   particles.count = Math.min(edgeData.length * PARTICLES_PER_EDGE, MAX_PARTICLES);
 }
 
-function updateGraph(localId, health, syncState) {
-  const peerCount = health.peers || 0;
-  const block = syncState ? syncState.currentBlock : '?';
-  const highest = syncState ? syncState.highestBlock : '?';
-  const syncing = health.isSyncing ? ' (syncing)' : '';
-  const subtitle = document.getElementById('subtitle');
-  subtitle.textContent = chainName + ' v' + nodeVersion + ' // ' + peerCount + ' peers // block #' + block + syncing;
+// ═══════════════════════════════════════════
+// BLOCK GRAPH MANAGEMENT
+// ═══════════════════════════════════════════
 
-  // Build wanted peer IDs (peer-0, peer-1, ...)
-  const wantedIds = new Set([localId]);
-  for (let i = 0; i < peerCount; i++) wantedIds.add('peer-' + i);
+function addBlock(number, hash, extrinsics) {
+  // Don't add duplicates
+  if (blockList.find(b => b.number === number)) return;
 
-  // Remove stale nodes
-  for (const id of [...nodeMap.keys()]) {
-    if (!wantedIds.has(id)) removeNode(id);
-  }
+  const blockId = 'block-' + number;
+  const extNodeIds = [];
+  const extCount = extrinsics.length;
+  const blockSize = 1.2 + Math.min(extCount * 0.1, 0.8);
 
-  // Add/update local node
-  addNode(localId, nodeName || 'LOCAL NODE', 'local', 1.8, {
-    block, highest, syncing: health.isSyncing, version: nodeVersion,
+  // Block position: newest at x=0, will be shifted
+  const pos = new THREE.Vector3(0, 0, 0);
+  addNode(blockId, '#' + number, COLORS.block, HEX.block, blockSize, pos, {
+    type: 'block', blockNumber: number, blockHash: hash, extCount,
   });
-  const localEntry = nodeMap.get(localId);
-  if (localEntry) {
-    localEntry.block = block;
-    localEntry.highest = highest;
-    localEntry.syncing = health.isSyncing;
+
+  // Extrinsic nodes
+  for (let i = 0; i < extCount; i++) {
+    const extId = 'ext-' + number + '-' + i;
+    const extHex = extrinsics[i];
+    const extBytes = (extHex.length - 2) / 2;
+    const angle = (i / extCount) * Math.PI * 2;
+    const radius = 2 + Math.random();
+    const extPos = new THREE.Vector3(
+      radius * Math.cos(angle),
+      radius * Math.sin(angle),
+      (Math.random() - 0.5) * 2
+    );
+    addNode(extId, 'Ext ' + i, COLORS.extrinsic, HEX.extrinsic, 0.4, extPos, {
+      type: 'extrinsic', extIndex: i, extBytes, extHex, blockNumber: number,
+    });
+    extNodeIds.push(extId);
   }
 
-  // Add anonymous peer nodes
-  for (let i = 0; i < peerCount; i++) {
-    const peerId = 'peer-' + i;
-    addNode(peerId, 'Peer ' + (i + 1), 'peer', 0.8);
+  const bd = { number, hash, extrinsics, finalized: false, nodeId: blockId, extNodeIds };
+  blockList.unshift(bd);
+
+  // Check if already finalized
+  if (number <= lastFinalizedNumber) {
+    bd.finalized = true;
+    setNodeColor(blockId, COLORS.finalized, HEX.finalized);
+    for (const eid of extNodeIds) setNodeColor(eid, COLORS.extFinal, HEX.extFinal);
   }
 
-  // Edges: local -> each peer
+  // Remove old blocks beyond window
+  while (blockList.length > MAX_BLOCKS) {
+    const old = blockList.pop();
+    for (const eid of old.extNodeIds) removeNode(eid);
+    removeNode(old.nodeId);
+  }
+
+  // Reposition all blocks along X axis
+  repositionBlocks();
+  rebuildAllEdges();
+  forceSettleSteps = 60;
+}
+
+function repositionBlocks() {
+  for (let i = 0; i < blockList.length; i++) {
+    const bd = blockList[i];
+    const entry = nodeMap.get(bd.nodeId);
+    if (!entry) continue;
+    const targetX = -i * BLOCK_SPACING;
+    entry.targetX = targetX;
+    // Set initial position for new nodes
+    if (i === 0 && Math.abs(entry.pos.x) < 0.01 && Math.abs(entry.pos.y) < 0.01) {
+      entry.pos.x = targetX;
+    }
+    // Position extrinsics relative to block
+    for (let j = 0; j < bd.extNodeIds.length; j++) {
+      const extEntry = nodeMap.get(bd.extNodeIds[j]);
+      if (!extEntry) continue;
+      extEntry.parentBlockId = bd.nodeId;
+      // Offset extrinsic position from block
+      if (extEntry.pos.length() < 3) {
+        const angle = (j / bd.extNodeIds.length) * Math.PI * 2;
+        const r = 2.5 + Math.random() * 0.5;
+        extEntry.pos.x = targetX + r * Math.cos(angle);
+        extEntry.pos.y = r * Math.sin(angle);
+        extEntry.pos.z = (Math.random() - 0.5) * 2;
+      }
+    }
+  }
+}
+
+function rebuildAllEdges() {
   edges = [];
-  for (let i = 0; i < peerCount; i++) edges.push([localId, 'peer-' + i]);
+  // Chain links between consecutive blocks
+  for (let i = 0; i < blockList.length - 1; i++) {
+    edges.push([blockList[i].nodeId, blockList[i + 1].nodeId]);
+  }
+  // Block -> extrinsic links
+  for (const bd of blockList) {
+    for (const eid of bd.extNodeIds) {
+      edges.push([bd.nodeId, eid]);
+    }
+  }
   rebuildEdges();
+}
 
-  // Re-settle force layout
-  forceSettleSteps = 100;
+function finalizeUpTo(number) {
+  lastFinalizedNumber = number;
+  for (const bd of blockList) {
+    if (bd.number <= number && !bd.finalized) {
+      bd.finalized = true;
+      setNodeColor(bd.nodeId, COLORS.finalized, HEX.finalized);
+      for (const eid of bd.extNodeIds) {
+        setNodeColor(eid, COLORS.extFinal, HEX.extFinal);
+      }
+    }
+  }
+  updateSubtitle();
+}
+
+function updateSubtitle() {
+  const newest = blockList.length > 0 ? blockList[0].number : '?';
+  const subtitle = document.getElementById('subtitle');
+  subtitle.textContent = chainName +
+    ' // best: #' + newest +
+    ' // finalized: #' + lastFinalizedNumber;
 }
 
 // ═══════════════════════════════════════════
 // ENVIRONMENT
 // ═══════════════════════════════════════════
 
-const grid = new THREE.GridHelper(80, 80, 0x00fff2, 0x00fff2);
+const grid = new THREE.GridHelper(120, 120, 0x00fff2, 0x00fff2);
 grid.material.opacity = 0.06;
 grid.material.transparent = true;
 grid.material.depthWrite = false;
 grid.position.y = -12;
 scene.add(grid);
 
-const grid2 = new THREE.GridHelper(80, 20, 0xff00ff, 0xff00ff);
+const grid2 = new THREE.GridHelper(120, 30, 0xff00ff, 0xff00ff);
 grid2.material.opacity = 0.03;
 grid2.material.transparent = true;
 grid2.material.depthWrite = false;
@@ -480,12 +564,13 @@ scene.add(stars1, stars2);
 // ═══════════════════════════════════════════
 
 let forceSettleSteps = 0;
-const repulsion = 40, attraction = 0.04, centering = 0.008, damping = 0.85, minDist = 0.5;
+const repulsion = 25, attraction = 0.06, damping = 0.85, minDist = 0.5;
 const _diff = new THREE.Vector3();
 
 function forceStep() {
   const allNodes = [...nodeMap.values()];
-  // Repulsion
+
+  // Repulsion between all nodes
   for (let i = 0; i < allNodes.length; i++) {
     for (let j = i + 1; j < allNodes.length; j++) {
       const a = allNodes[i], b = allNodes[j];
@@ -497,20 +582,27 @@ function forceStep() {
       b.vel.sub(_diff);
     }
   }
+
   // Attraction along edges
   for (const [srcId, tgtId] of edges) {
     const s = nodeMap.get(srcId), t = nodeMap.get(tgtId);
     if (!s || !t) continue;
     _diff.subVectors(t.pos, s.pos);
     const d = _diff.length();
-    const f = attraction * (d - 4);
+    const rest = s.type === 'block' && t.type === 'block' ? BLOCK_SPACING : 2.5;
+    const f = attraction * (d - rest);
     _diff.normalize().multiplyScalar(f);
     s.vel.add(_diff);
     t.vel.sub(_diff);
   }
-  // Centering
+
+  // Block positioning force: pull blocks toward their target X, center Y/Z
   for (const n of allNodes) {
-    n.vel.add(_diff.copy(n.pos).negate().multiplyScalar(centering));
+    if (n.targetX !== undefined) {
+      n.vel.x += (n.targetX - n.pos.x) * 0.15;
+      n.vel.y += (0 - n.pos.y) * 0.03;
+      n.vel.z += (0 - n.pos.z) * 0.03;
+    }
     n.vel.multiplyScalar(damping);
     n.pos.add(n.vel);
   }
@@ -534,7 +626,6 @@ const infoLayer = document.getElementById('info-layer');
 const infoDesc  = document.getElementById('info-desc');
 const infoConns = document.getElementById('info-connections');
 
-// VR 3D info panel (troika text attached to scene)
 const vrInfoText = new Text();
 vrInfoText.fontSize = 0.18;
 vrInfoText.color = '#00fff2';
@@ -552,34 +643,36 @@ scene.add(vrInfoText);
 function showInfo(nodeId) {
   const n = nodeMap.get(nodeId);
   if (!n) return;
-  const layer = LAYERS[n.layer] || LAYERS.unknown;
+  const hex = n.hex || '#00fff2';
 
-  // Build description
-  const lines = [];
-  if (n.id === localPeerId) {
-    lines.push('Peer ID: ' + shortId(n.id));
-    lines.push('Block: #' + (n.block || '?') + ' / #' + (n.highest || '?'));
-    if (n.syncing) lines.push('Status: Syncing...');
-    if (n.version) lines.push('Version: ' + n.version);
-  } else {
-    lines.push('Connected peer');
+  let title = '', layerName = '', desc = '';
+
+  if (n.type === 'block') {
+    const bd = blockList.find(b => b.nodeId === nodeId);
+    title = 'Block #' + n.blockNumber;
+    layerName = bd && bd.finalized ? 'Finalized' : 'Unfinalized';
+    desc = 'Hash: ' + shortHash(n.blockHash) +
+      '\nExtrinsics: ' + n.extCount +
+      '\nStatus: ' + layerName;
+  } else if (n.type === 'extrinsic') {
+    title = 'Extrinsic ' + n.extIndex;
+    layerName = 'Block #' + n.blockNumber;
+    desc = 'Size: ' + n.extBytes + ' bytes' +
+      '\nData: ' + (n.extHex ? n.extHex.slice(0, 40) + '...' : '?');
   }
-  const desc = lines.join('\n');
 
-  // HTML panel (non-VR)
-  infoTitle.textContent = n.label;
-  infoTitle.style.color = layer.hex;
-  infoLayer.textContent = layer.name;
-  infoLayer.style.color = layer.hex;
+  infoTitle.textContent = title;
+  infoTitle.style.color = hex;
+  infoLayer.textContent = layerName;
+  infoLayer.style.color = hex;
   infoDesc.textContent = desc;
   infoConns.textContent = '';
   infoPanel.style.display = 'block';
-  infoPanel.style.borderColor = layer.hex + '44';
+  infoPanel.style.borderColor = hex + '44';
 
-  // VR 3D panel
   if (renderer.xr.isPresenting) {
-    vrInfoText.text = n.label + '\n' + layer.name + '\n\n' + desc;
-    vrInfoText.color = layer.hex;
+    vrInfoText.text = title + '\n' + layerName + '\n\n' + desc;
+    vrInfoText.color = hex;
     vrInfoText.visible = true;
     vrInfoText.sync();
   }
@@ -635,7 +728,6 @@ window.addEventListener('click', () => {
   }
 });
 
-// VR node selection on pinch release (skip if two-hand zoom)
 function vrSelectNode(wasTwoHand) {
   if (wasTwoHand) return;
   if (hoveredNode) {
@@ -651,12 +743,8 @@ function vrSelectNode(wasTwoHand) {
     hideInfo();
   }
 }
-controller0.addEventListener('selectend', () => {
-  vrSelectNode(pinchState.active);
-});
-controller1.addEventListener('selectend', () => {
-  vrSelectNode(pinchState.active);
-});
+controller0.addEventListener('selectend', () => { vrSelectNode(pinchState.active); });
+controller1.addEventListener('selectend', () => { vrSelectNode(pinchState.active); });
 
 // ═══════════════════════════════════════════
 // ANIMATION LOOP
@@ -669,31 +757,26 @@ const _parentQuat = new THREE.Quaternion();
 
 function animate() {
   const t = clock.getElapsedTime();
-  const dt = Math.min(clock.getDelta(), 0.05);
 
-  // Force simulation (settle after graph updates)
   if (forceSettleSteps > 0) {
     forceStep();
     forceSettleSteps--;
   }
 
-  // Update node positions + floating bob
   for (const n of nodeMap.values()) {
     n.mesh.position.copy(n.pos);
-    n.mesh.position.y += Math.sin(t * 0.5 + n.phase) * 0.15;
+    n.mesh.position.y += Math.sin(t * 0.5 + n.phase) * 0.1;
     n.mesh.rotation.y = t * 0.2 + n.phase;
     n.mesh.rotation.x = Math.sin(t * 0.3 + n.phase) * 0.1;
     n.glow.material.opacity = 0.5 + 0.15 * Math.sin(t * 1.5 + n.phase);
   }
 
-  // Billboard labels to face camera
   camera.getWorldQuaternion(_camQuat);
   for (const { label, mesh } of labelEntries) {
     mesh.getWorldQuaternion(_parentQuat).invert();
     label.quaternion.copy(_camQuat).premultiply(_parentQuat);
   }
 
-  // Update edge lines
   for (const e of edgeData) {
     const pa = e.geo.attributes.position.array;
     const sp = e.src.mesh.position, tp = e.tgt.mesh.position;
@@ -703,7 +786,6 @@ function animate() {
     e.line.material.opacity = 0.25 + 0.1 * Math.sin(t * 2 + e.phaseOffsets[0] * 10);
   }
 
-  // Update edge particles
   let idx = 0;
   const _a = new THREE.Vector3(), _b = new THREE.Vector3();
   for (const e of edgeData) {
@@ -713,8 +795,7 @@ function animate() {
       if (idx >= MAX_PARTICLES) break;
       const phase = ((t * e.speed + e.phaseOffsets[p]) % 1 + 1) % 1;
       dummy.position.lerpVectors(_a, _b, phase);
-      const fadeEdge = Math.sin(phase * Math.PI);
-      dummy.scale.setScalar(0.4 + 0.6 * fadeEdge);
+      dummy.scale.setScalar(0.4 + 0.6 * Math.sin(phase * Math.PI));
       dummy.updateMatrix();
       particles.setMatrixAt(idx, dummy.matrix);
       idx++;
@@ -722,14 +803,10 @@ function animate() {
   }
   particles.instanceMatrix.needsUpdate = true;
 
-  // Rotate stars slowly
   stars1.rotation.y = t * 0.005;
   stars2.rotation.y = -t * 0.003;
-
-  // Move grid for travel effect
   grid.position.z = (t * 0.5) % 1;
 
-  // Raycasting (non-VR)
   if (!renderer.xr.isPresenting) {
     raycaster.setFromCamera(pointer, camera);
     const hits = raycaster.intersectObjects(nodeMeshes, false);
@@ -743,7 +820,6 @@ function animate() {
     controls.update();
     composer.render();
   } else {
-    // Two-handed pinch-to-zoom + drag
     const session = renderer.xr.getSession();
     const sources = session ? session.inputSources : [];
     const selectingSources = [];
@@ -777,7 +853,6 @@ function animate() {
       pinchState.active = false;
     }
 
-    // VR raycasting from both controllers, pick closest hit
     const tempMatrix = new THREE.Matrix4();
     const rayDir = new THREE.Vector3(Math.sin(RAY_PITCH), 0, -Math.cos(RAY_PITCH));
     let bestHit = null;
@@ -795,7 +870,6 @@ function animate() {
     } else {
       if (!selectedNode) highlightNode(null);
     }
-    // Position VR info panel near selected node, facing camera
     if (vrInfoText.visible && selectedNode) {
       const sn = nodeMap.get(selectedNode);
       if (sn) {
@@ -817,54 +891,66 @@ renderer.setAnimationLoop(animate);
 
 function connectRpc() {
   const subtitle = document.getElementById('subtitle');
-  subtitle.textContent = 'Connecting to ' + RPC_URL.replace('wss://', '') + '...';
+  subtitle.textContent = 'Connecting...';
 
   ws = new WebSocket(RPC_URL);
-  ws.onopen = () => {
-    subtitle.textContent = 'Connected, fetching network...';
-    fetchNetworkData();
+  ws.onopen = async () => {
+    subtitle.textContent = 'Connected, subscribing...';
+    try {
+      chainName = await rpcCall('system_chain');
+
+      // Subscribe to new (unfinalized) heads
+      await rpcCall('chain_subscribeNewHeads');
+
+      // Subscribe to finalized heads
+      await rpcCall('chain_subscribeFinalizedHeads');
+
+      subtitle.textContent = chainName + ' // waiting for blocks...';
+    } catch (e) {
+      console.error('Setup error:', e);
+      subtitle.textContent = 'Error: ' + e.message;
+    }
   };
-  ws.onmessage = (evt) => {
+
+  ws.onmessage = async (evt) => {
     const msg = JSON.parse(evt.data);
+
+    // RPC response
     if (msg.id != null && rpcCallbacks.has(msg.id)) {
       const cb = rpcCallbacks.get(msg.id);
       clearTimeout(cb.timer);
       rpcCallbacks.delete(msg.id);
       if (msg.error) cb.reject(msg.error);
       else cb.resolve(msg.result);
+      return;
+    }
+
+    // Subscription notifications
+    if (msg.params && msg.params.result) {
+      const header = msg.params.result;
+      const number = parseInt(header.number, 16);
+
+      if (msg.method === 'chain_newHead') {
+        try {
+          const hash = await rpcCall('chain_getBlockHash', [number]);
+          const block = await rpcCall('chain_getBlock', [hash]);
+          addBlock(number, hash, block.block.extrinsics);
+          updateSubtitle();
+        } catch (e) {
+          console.error('Failed to fetch block', number, e);
+        }
+      } else if (msg.method === 'chain_finalizedHead') {
+        finalizeUpTo(number);
+      }
     }
   };
+
   ws.onerror = () => {
     subtitle.textContent = 'Connection error, retrying...';
   };
   ws.onclose = () => {
     setTimeout(connectRpc, 5000);
   };
-}
-
-async function fetchNetworkData() {
-  try {
-    const [peerId, health, chain, name, version, syncState] = await Promise.all([
-      rpcCall('system_localPeerId'),
-      rpcCall('system_health'),
-      rpcCall('system_chain'),
-      rpcCall('system_name'),
-      rpcCall('system_version'),
-      rpcCall('system_syncState'),
-    ]);
-    localPeerId = peerId;
-    chainName = chain;
-    nodeName = name;
-    nodeVersion = version;
-
-    updateGraph(localPeerId, health, syncState);
-  } catch (e) {
-    console.error('RPC error:', e);
-    document.getElementById('subtitle').textContent = 'RPC error: ' + e.message;
-  }
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    setTimeout(fetchNetworkData, 15000);
-  }
 }
 
 connectRpc();

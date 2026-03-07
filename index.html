@@ -71,10 +71,7 @@
   <div id="subtitle">Connecting...</div>
   <div id="legend">
     <div class="legend-item"><div class="legend-dot" style="color:#00fff2;background:#00fff2"></div> Local Node</div>
-    <div class="legend-item"><div class="legend-dot" style="color:#ff00ff;background:#ff00ff"></div> Authority</div>
-    <div class="legend-item"><div class="legend-dot" style="color:#00ff88;background:#00ff88"></div> Full Node</div>
-    <div class="legend-item"><div class="legend-dot" style="color:#ffd700;background:#ffd700"></div> Light Client</div>
-    <div class="legend-item"><div class="legend-dot" style="color:#ff6600;background:#ff6600"></div> Unknown</div>
+    <div class="legend-item"><div class="legend-dot" style="color:#00ff88;background:#00ff88"></div> Peer</div>
   </div>
   <div id="info-panel">
     <h3 id="info-title"></h3>
@@ -110,21 +107,9 @@ import { Text } from 'troika-three-text';
 // ═══════════════════════════════════════════
 
 const LAYERS = {
-  local:     { color: new THREE.Color(0x00fff2), hex: '#00fff2', name: 'Local Node' },
-  authority: { color: new THREE.Color(0xff00ff), hex: '#ff00ff', name: 'Authority' },
-  full:      { color: new THREE.Color(0x00ff88), hex: '#00ff88', name: 'Full Node' },
-  light:     { color: new THREE.Color(0xffd700), hex: '#ffd700', name: 'Light Client' },
-  unknown:   { color: new THREE.Color(0xff6600), hex: '#ff6600', name: 'Unknown' },
+  local: { color: new THREE.Color(0x00fff2), hex: '#00fff2', name: 'Local Node' },
+  peer:  { color: new THREE.Color(0x00ff88), hex: '#00ff88', name: 'Peer' },
 };
-
-function roleToLayer(roles) {
-  if (!roles) return 'unknown';
-  const r = roles.toUpperCase();
-  if (r.includes('AUTHORITY')) return 'authority';
-  if (r.includes('FULL')) return 'full';
-  if (r.includes('LIGHT')) return 'light';
-  return 'unknown';
-}
 
 function shortId(peerId) {
   if (!peerId) return '???';
@@ -137,7 +122,8 @@ let rpcId = 0;
 const rpcCallbacks = new Map();
 let localPeerId = null;
 let chainName = '';
-let mempoolCount = 0;
+let nodeName = '';
+let nodeVersion = '';
 let edges = [];
 
 function rpcCall(method, params = []) {
@@ -405,41 +391,43 @@ function rebuildEdges() {
   particles.count = Math.min(edgeData.length * PARTICLES_PER_EDGE, MAX_PARTICLES);
 }
 
-function updateGraph(localId, peers, pendingTxns) {
+function updateGraph(localId, health, syncState) {
+  const peerCount = health.peers || 0;
+  const block = syncState ? syncState.currentBlock : '?';
+  const highest = syncState ? syncState.highestBlock : '?';
+  const syncing = health.isSyncing ? ' (syncing)' : '';
   const subtitle = document.getElementById('subtitle');
-  subtitle.textContent = chainName + ' // ' + peers.length + ' peers // mempool: ' + pendingTxns;
+  subtitle.textContent = chainName + ' v' + nodeVersion + ' // ' + peerCount + ' peers // block #' + block + syncing;
 
-  // Determine which IDs should exist
+  // Build wanted peer IDs (peer-0, peer-1, ...)
   const wantedIds = new Set([localId]);
-  for (const p of peers) wantedIds.add(p.peerId);
+  for (let i = 0; i < peerCount; i++) wantedIds.add('peer-' + i);
 
   // Remove stale nodes
-  for (const id of nodeMap.keys()) {
+  for (const id of [...nodeMap.keys()]) {
     if (!wantedIds.has(id)) removeNode(id);
   }
 
   // Add/update local node
-  addNode(localId, 'LOCAL NODE', 'local', 1.8, { bestNumber: '?', role: 'local', mempool: pendingTxns });
+  addNode(localId, nodeName || 'LOCAL NODE', 'local', 1.8, {
+    block, highest, syncing: health.isSyncing, version: nodeVersion,
+  });
   const localEntry = nodeMap.get(localId);
-  if (localEntry) localEntry.mempool = pendingTxns;
+  if (localEntry) {
+    localEntry.block = block;
+    localEntry.highest = highest;
+    localEntry.syncing = health.isSyncing;
+  }
 
-  // Add/update peers
-  for (const p of peers) {
-    const layer = roleToLayer(p.roles);
-    addNode(p.peerId, shortId(p.peerId), layer, 1.0, {
-      bestNumber: p.bestNumber, bestHash: p.bestHash, role: p.roles,
-    });
-    // Update existing peer data
-    const entry = nodeMap.get(p.peerId);
-    if (entry) {
-      entry.bestNumber = p.bestNumber;
-      entry.bestHash = p.bestHash;
-      entry.role = p.roles;
-    }
+  // Add anonymous peer nodes
+  for (let i = 0; i < peerCount; i++) {
+    const peerId = 'peer-' + i;
+    addNode(peerId, 'Peer ' + (i + 1), 'peer', 0.8);
   }
 
   // Edges: local -> each peer
-  edges = peers.map(p => [localId, p.peerId]);
+  edges = [];
+  for (let i = 0; i < peerCount; i++) edges.push([localId, 'peer-' + i]);
   rebuildEdges();
 
   // Re-settle force layout
@@ -570,12 +558,11 @@ function showInfo(nodeId) {
   const lines = [];
   if (n.id === localPeerId) {
     lines.push('Peer ID: ' + shortId(n.id));
-    lines.push('Mempool: ' + (n.mempool || 0) + ' pending txns');
+    lines.push('Block: #' + (n.block || '?') + ' / #' + (n.highest || '?'));
+    if (n.syncing) lines.push('Status: Syncing...');
+    if (n.version) lines.push('Version: ' + n.version);
   } else {
-    lines.push('Peer ID: ' + shortId(n.id));
-    lines.push('Role: ' + (n.role || 'unknown'));
-    lines.push('Best block: #' + (n.bestNumber || '?'));
-    if (n.bestHash) lines.push('Hash: ' + shortId(n.bestHash));
+    lines.push('Connected peer');
   }
   const desc = lines.join('\n');
 
@@ -857,23 +844,24 @@ function connectRpc() {
 
 async function fetchNetworkData() {
   try {
-    const results = await Promise.all([
+    const [peerId, health, chain, name, version, syncState] = await Promise.all([
       rpcCall('system_localPeerId'),
-      rpcCall('system_peers'),
+      rpcCall('system_health'),
       rpcCall('system_chain'),
-      rpcCall('author_pendingExtrinsics').catch(() => []),
+      rpcCall('system_name'),
+      rpcCall('system_version'),
+      rpcCall('system_syncState'),
     ]);
-    localPeerId = results[0];
-    const peers = results[1];
-    chainName = results[2];
-    mempoolCount = results[3].length;
+    localPeerId = peerId;
+    chainName = chain;
+    nodeName = name;
+    nodeVersion = version;
 
-    updateGraph(localPeerId, peers, mempoolCount);
+    updateGraph(localPeerId, health, syncState);
   } catch (e) {
     console.error('RPC error:', e);
     document.getElementById('subtitle').textContent = 'RPC error: ' + e.message;
   }
-  // Poll every 15 seconds
   if (ws && ws.readyState === WebSocket.OPEN) {
     setTimeout(fetchNetworkData, 15000);
   }

@@ -712,7 +712,7 @@ function showInfo(nodeId) {
 
   if (n.type === 'block') {
     const bd = blockList.find(b => b.nodeId === nodeId);
-    title = 'Block #' + n.blockNumber;
+    title = 'Midnight Block #' + n.blockNumber;
     layerName = bd && bd.finalized ? 'Finalized' : 'Unfinalized';
     desc = 'Hash: ' + shortHash(n.blockHash) +
       '\nExtrinsics: ' + n.extCount +

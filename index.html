@@ -28,7 +28,9 @@
     #legend {
       position: absolute; bottom: 20px; left: 20px; font-size: 12px; line-height: 22px;
     }
-    .legend-item { display: flex; align-items: center; gap: 8px; opacity: 0.7; }
+    .legend-item { display: flex; align-items: center; gap: 8px; opacity: 0.7; pointer-events: auto; cursor: pointer; }
+    .legend-item:hover { opacity: 1; }
+    .legend-item input[type="checkbox"] { accent-color: currentColor; cursor: pointer; }
     .legend-dot {
       width: 8px; height: 8px; border-radius: 50%;
       box-shadow: 0 0 6px currentColor;
@@ -70,10 +72,10 @@
   <div id="title">MIDNIGHT <span>//</span> BLOCKS</div>
   <div id="subtitle">Connecting...</div>
   <div id="legend">
-    <div class="legend-item"><div class="legend-dot" style="color:#00fff2;background:#00fff2"></div> Unfinalized Block</div>
-    <div class="legend-item"><div class="legend-dot" style="color:#ffd700;background:#ffd700"></div> Finalized Block</div>
-    <div class="legend-item"><div class="legend-dot" style="color:#ff00ff;background:#ff00ff"></div> Extrinsic</div>
-    <div class="legend-item"><div class="legend-dot" style="color:#4488ff;background:#4488ff"></div> Cardano Block</div>
+    <label class="legend-item" style="color:#00fff2"><input type="checkbox" checked data-filter="unfinalized"><div class="legend-dot" style="color:#00fff2;background:#00fff2"></div> Unfinalized Block</label>
+    <label class="legend-item" style="color:#ffd700"><input type="checkbox" checked data-filter="finalized"><div class="legend-dot" style="color:#ffd700;background:#ffd700"></div> Finalized Block</label>
+    <label class="legend-item" style="color:#ff00ff"><input type="checkbox" checked data-filter="extrinsic"><div class="legend-dot" style="color:#ff00ff;background:#ff00ff"></div> Extrinsic</label>
+    <label class="legend-item" style="color:#4488ff"><input type="checkbox" checked data-filter="cardano"><div class="legend-dot" style="color:#4488ff;background:#4488ff"></div> Cardano Block</label>
   </div>
   <div id="info-panel">
     <h3 id="info-title"></h3>
@@ -401,6 +403,7 @@ function rebuildEdges() {
   for (const [srcId, tgtId] of edges) {
     const src = nodeMap.get(srcId), tgt = nodeMap.get(tgtId);
     if (!src || !tgt) continue;
+    if (!src.mesh.visible || !tgt.mesh.visible) continue;
     const srcColor = src.color || COLORS.block;
     const tgtColor = tgt.color || COLORS.block;
 
@@ -489,7 +492,7 @@ function addBlock(number, hash, extrinsics, digestLogs) {
 
   // Reposition all blocks along X axis
   repositionBlocks();
-  rebuildAllEdges();
+  applyFilters();
   forceSettleSteps = 150;
 }
 
@@ -565,6 +568,7 @@ function finalizeUpTo(number) {
       }
     }
   }
+  applyFilters();
   updateSubtitle();
 }
 
@@ -629,7 +633,7 @@ const repulsion = 15, attraction = 0.03, damping = 0.92, minDist = 0.5;
 const _diff = new THREE.Vector3();
 
 function forceStep() {
-  const allNodes = [...nodeMap.values()];
+  const allNodes = [...nodeMap.values()].filter(n => n.mesh.visible);
 
   // Repulsion between all nodes
   for (let i = 0; i < allNodes.length; i++) {
@@ -647,7 +651,7 @@ function forceStep() {
   // Attraction along edges
   for (const [srcId, tgtId] of edges) {
     const s = nodeMap.get(srcId), t = nodeMap.get(tgtId);
-    if (!s || !t) continue;
+    if (!s || !t || !s.mesh.visible || !t.mesh.visible) continue;
     _diff.subVectors(t.pos, s.pos);
     const d = _diff.length();
     const crossChain = (s.type === 'block' && t.type === 'cardano') || (s.type === 'cardano' && t.type === 'block');
@@ -829,6 +833,40 @@ function vrSelectNode(wasTwoHand) {
 }
 controller0.addEventListener('selectend', () => { vrSelectNode(pinchState.active); });
 controller1.addEventListener('selectend', () => { vrSelectNode(pinchState.active); });
+
+// ═══════════════════════════════════════════
+// LEGEND FILTERS
+// ═══════════════════════════════════════════
+
+const visibleFilters = { unfinalized: true, finalized: true, extrinsic: true, cardano: true };
+
+function getNodeFilter(entry) {
+  if (entry.type === 'cardano') return 'cardano';
+  if (entry.type === 'extrinsic') return 'extrinsic';
+  if (entry.type === 'block') {
+    const bd = blockList.find(b => b.nodeId === entry.id);
+    return bd && bd.finalized ? 'finalized' : 'unfinalized';
+  }
+  return null;
+}
+
+function applyFilters() {
+  for (const [id, entry] of nodeMap) {
+    const filter = getNodeFilter(entry);
+    const visible = filter ? visibleFilters[filter] : true;
+    entry.mesh.visible = visible;
+  }
+  // Rebuild edges so hidden nodes lose their connections
+  rebuildAllEdges();
+  forceSettleSteps = 150;
+}
+
+document.querySelectorAll('#legend input[data-filter]').forEach(cb => {
+  cb.addEventListener('change', () => {
+    visibleFilters[cb.dataset.filter] = cb.checked;
+    applyFilters();
+  });
+});
 
 // ═══════════════════════════════════════════
 // ANIMATION LOOP

@@ -73,6 +73,7 @@
     <div class="legend-item"><div class="legend-dot" style="color:#00fff2;background:#00fff2"></div> Unfinalized Block</div>
     <div class="legend-item"><div class="legend-dot" style="color:#ffd700;background:#ffd700"></div> Finalized Block</div>
     <div class="legend-item"><div class="legend-dot" style="color:#ff00ff;background:#ff00ff"></div> Extrinsic</div>
+    <div class="legend-item"><div class="legend-dot" style="color:#4488ff;background:#4488ff"></div> Cardano Block</div>
   </div>
   <div id="info-panel">
     <h3 id="info-title"></h3>
@@ -112,9 +113,11 @@ const COLORS = {
   finalized: new THREE.Color(0xffd700),
   extrinsic: new THREE.Color(0xff00ff),
   extFinal:  new THREE.Color(0xffa500),
+  cardano:   new THREE.Color(0x4488ff),
 };
 const HEX = {
   block: '#00fff2', finalized: '#ffd700', extrinsic: '#ff00ff', extFinal: '#ffa500',
+  cardano: '#4488ff',
 };
 
 const RPC_URL = 'wss://rpc.preview.midnight.network';
@@ -133,6 +136,66 @@ const blockList = [];
 // { number, hash, extrinsics: [hex...], finalized, nodeId, extNodeIds: [...] }
 
 let edges = [];
+
+// Cardano block tracking
+const cardanoBlocks = new Map();
+const cardanoBlockList = [];
+const CARDANO_Y_OFFSET = -8;
+const pendingCardanoFetches = new Map();
+
+function parseMcshDigest(digestLogs) {
+  const MCSH = '6d637368';
+  for (const log of digestLogs) {
+    const hex = log.startsWith('0x') ? log.slice(2) : log;
+    if (hex.length >= 76 && hex.slice(0, 2) === '06' && hex.slice(2, 10) === MCSH) {
+      return hex.slice(12, 76);
+    }
+  }
+  return null;
+}
+
+async function fetchCardanoBlock(hash) {
+  if (cardanoBlocks.has(hash)) return;
+  if (pendingCardanoFetches.has(hash)) return pendingCardanoFetches.get(hash);
+  const p = (async () => {
+    try {
+      const resp = await fetch('https://preview.koios.rest/api/v1/block_info', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ _block_hashes: [hash] }),
+      });
+      const data = await resp.json();
+      console.log('Koios response for', hash.slice(0, 16), ':', data.length, 'results', resp.status);
+      if (data.length > 0) {
+        const info = data[0];
+        const nodeId = 'cardano-' + hash.slice(0, 16);
+        const cb = {
+          hash, height: info.block_height, epoch: info.epoch_no,
+          slot: info.abs_slot, txCount: info.tx_count, pool: info.pool,
+          nodeId, referencedBy: new Set(),
+        };
+        cardanoBlocks.set(hash, cb);
+        const pos = new THREE.Vector3(0, CARDANO_Y_OFFSET, 0);
+        addNode(nodeId, 'C#' + cb.height, COLORS.cardano, HEX.cardano, 1.0, pos, {
+          type: 'cardano', cardanoHash: hash, height: cb.height,
+          epoch: cb.epoch, slot: cb.slot, txCount: cb.txCount, pool: cb.pool,
+        });
+        cardanoBlockList.push(cb);
+        cardanoBlockList.sort((a, b) => b.height - a.height);
+        repositionCardanoBlocks();
+        updateSubtitle();
+      } else {
+        cardanoBlocks.set(hash, null);
+      }
+    } catch (e) {
+      console.error('Koios error:', e);
+    } finally {
+      pendingCardanoFetches.delete(hash);
+    }
+  })();
+  pendingCardanoFetches.set(hash, p);
+  return p;
+}
 
 function rpcCall(method, params = []) {
   return new Promise((resolve, reject) => {
@@ -397,7 +460,7 @@ function rebuildEdges() {
 // BLOCK GRAPH MANAGEMENT
 // ═══════════════════════════════════════════
 
-function addBlock(number, hash, extrinsics) {
+function addBlock(number, hash, extrinsics, digestLogs) {
   // Don't add duplicates
   if (blockList.find(b => b.number === number)) return;
 
@@ -441,6 +504,27 @@ function addBlock(number, hash, extrinsics) {
     for (const eid of extNodeIds) setNodeColor(eid, COLORS.extFinal, HEX.extFinal);
   }
 
+  // Parse mcsh digest for Cardano block reference
+  if (digestLogs) {
+    const mcshHash = parseMcshDigest(digestLogs);
+    console.log('mcsh for block', number, ':', mcshHash ? mcshHash.slice(0, 16) + '...' : 'NOT FOUND', 'logs:', digestLogs.length);
+    if (mcshHash) {
+      bd.cardanoHash = mcshHash;
+      fetchCardanoBlock(mcshHash).then(() => {
+        const cb = cardanoBlocks.get(mcshHash);
+        console.log('Cardano fetch done for', mcshHash.slice(0, 16), ':', cb ? 'OK height=' + cb.height : 'null');
+        if (cb && cb.nodeId) {
+          cb.referencedBy.add(number);
+          bd.cardanoNodeId = cb.nodeId;
+          rebuildAllEdges();
+          forceSettleSteps = 150;
+        }
+      });
+    }
+  } else {
+    console.log('No digestLogs for block', number);
+  }
+
   // Reposition all blocks along X axis
   repositionBlocks();
   rebuildAllEdges();
@@ -475,6 +559,16 @@ function repositionBlocks() {
   }
 }
 
+function repositionCardanoBlocks() {
+  for (let i = 0; i < cardanoBlockList.length; i++) {
+    const cb = cardanoBlockList[i];
+    const entry = nodeMap.get(cb.nodeId);
+    if (!entry) continue;
+    entry.targetX = -i * BLOCK_SPACING;
+    entry.targetY = CARDANO_Y_OFFSET;
+  }
+}
+
 function rebuildAllEdges() {
   edges = [];
   // Chain links between consecutive blocks
@@ -486,6 +580,14 @@ function rebuildAllEdges() {
     for (const eid of bd.extNodeIds) {
       edges.push([bd.nodeId, eid]);
     }
+    // Cross-chain link: Midnight block -> Cardano block
+    if (bd.cardanoNodeId) {
+      edges.push([bd.nodeId, bd.cardanoNodeId]);
+    }
+  }
+  // Cardano chain links
+  for (let i = 0; i < cardanoBlockList.length - 1; i++) {
+    edges.push([cardanoBlockList[i].nodeId, cardanoBlockList[i + 1].nodeId]);
   }
   rebuildEdges();
 }
@@ -511,6 +613,7 @@ function updateSubtitle() {
     ' // best: #' + newest +
     ' // finalized: #' + lastFinalizedNumber +
     ' // blocks: ' + blockList.length +
+    ' // cardano: ' + cardanoBlockList.length +
     ' // nodes: ' + nodeMap.size;
 }
 
@@ -585,7 +688,9 @@ function forceStep() {
     if (!s || !t) continue;
     _diff.subVectors(t.pos, s.pos);
     const d = _diff.length();
-    const rest = s.type === 'block' && t.type === 'block' ? BLOCK_SPACING : 2.5;
+    const crossChain = (s.type === 'block' && t.type === 'cardano') || (s.type === 'cardano' && t.type === 'block');
+    const chainLink = (s.type === 'block' && t.type === 'block') || (s.type === 'cardano' && t.type === 'cardano');
+    const rest = chainLink ? BLOCK_SPACING : crossChain ? Math.abs(CARDANO_Y_OFFSET) : 2.5;
     const f = attraction * (d - rest);
     _diff.normalize().multiplyScalar(f);
     s.vel.add(_diff);
@@ -596,7 +701,7 @@ function forceStep() {
   for (const n of allNodes) {
     if (n.targetX !== undefined) {
       n.vel.x += (n.targetX - n.pos.x) * 0.05;
-      n.vel.y += (0 - n.pos.y) * 0.01;
+      n.vel.y += ((n.targetY !== undefined ? n.targetY : 0) - n.pos.y) * 0.01;
       n.vel.z += (0 - n.pos.z) * 0.01;
     }
     n.vel.multiplyScalar(damping);
@@ -649,12 +754,20 @@ function showInfo(nodeId) {
     layerName = bd && bd.finalized ? 'Finalized' : 'Unfinalized';
     desc = 'Hash: ' + shortHash(n.blockHash) +
       '\nExtrinsics: ' + n.extCount +
-      '\nStatus: ' + layerName;
+      '\nStatus: ' + layerName +
+      (bd && bd.cardanoHash ? '\nCardano: ' + shortHash(bd.cardanoHash) : '');
   } else if (n.type === 'extrinsic') {
     title = 'Extrinsic ' + n.extIndex;
     layerName = 'Block #' + n.blockNumber;
     desc = 'Size: ' + n.extBytes + ' bytes' +
       '\nData: ' + (n.extHex ? n.extHex.slice(0, 40) + '...' : '?');
+  } else if (n.type === 'cardano') {
+    title = 'Cardano #' + n.height;
+    layerName = 'Epoch ' + n.epoch;
+    desc = 'Hash: ' + shortHash(n.cardanoHash) +
+      '\nSlot: ' + n.slot +
+      '\nTransactions: ' + n.txCount +
+      (n.pool ? '\nPool: ' + shortHash(n.pool) : '');
   }
 
   infoTitle.textContent = title;
@@ -728,6 +841,10 @@ window.addEventListener('dblclick', () => {
   if (!hoveredNode) return;
   const n = nodeMap.get(hoveredNode);
   if (!n) return;
+  if (n.type === 'cardano') {
+    window.open('https://preview.cardanoscan.io/block/' + n.cardanoHash, '_blank');
+    return;
+  }
   const hash = n.type === 'block' ? n.blockHash :
     n.type === 'extrinsic' ? nodeMap.get('block-' + n.blockNumber)?.blockHash : null;
   if (hash) {
@@ -942,7 +1059,7 @@ function connectRpc() {
         try {
           const hash = await rpcCall('chain_getBlockHash', [number]);
           const block = await rpcCall('chain_getBlock', [hash]);
-          addBlock(number, hash, block.block.extrinsics);
+          addBlock(number, hash, block.block.extrinsics, block.block.header.digest.logs);
           updateSubtitle();
         } catch (e) {
           console.error('Failed to fetch block', number, e);

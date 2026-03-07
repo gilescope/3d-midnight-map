@@ -98,9 +98,13 @@
 </script>
 
 <script>
-// Surface any errors visually on mobile where dev tools aren't available
-window.onerror = (msg, src, line) => {
-  document.getElementById('subtitle').textContent = 'ERROR: ' + msg + ' (line ' + line + ')';
+window.onerror = (msg) => {
+  const sub = document.getElementById('subtitle');
+  if (/webgl/i.test(msg)) {
+    sub.textContent = 'WebGL not available (Lockdown Mode or unsupported browser)';
+  } else {
+    sub.textContent = 'ERROR: ' + msg;
+  }
 };
 </script>
 <script type="module">

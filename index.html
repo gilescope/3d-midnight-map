@@ -160,7 +160,7 @@ function shortHash(h) {
 // ═══════════════════════════════════════════
 
 const scene = new THREE.Scene();
-scene.fog = new THREE.FogExp2(0x050510, 0.012);
+scene.fog = new THREE.FogExp2(0x050510, 0.004);
 
 const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 200);
 camera.position.set(0, 10, 25);

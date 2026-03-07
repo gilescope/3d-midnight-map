@@ -509,7 +509,9 @@ function updateSubtitle() {
   const subtitle = document.getElementById('subtitle');
   subtitle.textContent = chainName +
     ' // best: #' + newest +
-    ' // finalized: #' + lastFinalizedNumber;
+    ' // finalized: #' + lastFinalizedNumber +
+    ' // blocks: ' + blockList.length +
+    ' // nodes: ' + nodeMap.size;
 }
 
 // ═══════════════════════════════════════════

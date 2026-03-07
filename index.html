@@ -728,6 +728,18 @@ window.addEventListener('click', () => {
   }
 });
 
+window.addEventListener('dblclick', () => {
+  if (!hoveredNode) return;
+  const n = nodeMap.get(hoveredNode);
+  if (!n) return;
+  const hash = n.type === 'block' ? n.blockHash :
+    n.type === 'extrinsic' ? nodeMap.get('block-' + n.blockNumber)?.blockHash : null;
+  if (hash) {
+    const rpcEncoded = encodeURIComponent(RPC_URL);
+    window.open('https://polkadot.js.org/apps/?rpc=' + rpcEncoded + '#/explorer/query/' + hash, '_blank');
+  }
+});
+
 function vrSelectNode(wasTwoHand) {
   if (wasTwoHand) return;
   if (hoveredNode) {

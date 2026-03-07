@@ -801,7 +801,7 @@ window.addEventListener('dblclick', () => {
   const n = nodeMap.get(hoveredNode);
   if (!n) return;
   if (n.type === 'cardano') {
-    window.open('https://preview.cardanoscan.io/block/' + n.cardanoHash, '_blank');
+    window.open('https://preview.cexplorer.io/block/' + n.cardanoHash, '_blank');
     return;
   }
   const hash = n.type === 'block' ? n.blockHash :

@@ -228,8 +228,8 @@ const controller0 = renderer.xr.getController(0);
 const controller1 = renderer.xr.getController(1);
 scene.add(controller0);
 scene.add(controller1);
-// Pitch ray down 20 degrees to match natural hand angle on visionOS
-const RAY_PITCH = -20 * Math.PI / 180;
+// Pitch ray down 35 degrees to match natural hand angle on visionOS
+const RAY_PITCH = -35 * Math.PI / 180;
 const rayEnd = new THREE.Vector3(0, Math.sin(RAY_PITCH) * 8, Math.cos(RAY_PITCH) * -8);
 const rayGeo = new THREE.BufferGeometry().setFromPoints([
   new THREE.Vector3(0, 0, 0), rayEnd
@@ -243,25 +243,13 @@ controller0.add(rayLine0);
 controller1.add(rayLine1);
 
 // Two-handed pinch-to-zoom state
-const pinchState = { left: false, right: false, startDist: 0, startScale: 1, startMid: new THREE.Vector3(), startGroupPos: new THREE.Vector3() };
+const pinchState = { left: false, right: false, active: false, startDist: 0, startScale: 1, startMid: new THREE.Vector3(), startGroupPos: new THREE.Vector3() };
 const _c0Pos = new THREE.Vector3();
 const _c1Pos = new THREE.Vector3();
 const _midPos = new THREE.Vector3();
 
-controller0.addEventListener('selectstart', () => { pinchState.right = true; startTwoHandGesture(); });
-controller1.addEventListener('selectstart', () => { pinchState.left = true; startTwoHandGesture(); });
-
-function startTwoHandGesture() {
-  if (pinchState.left && pinchState.right) {
-    controller0.getWorldPosition(_c0Pos);
-    controller1.getWorldPosition(_c1Pos);
-    pinchState.startDist = _c0Pos.distanceTo(_c1Pos);
-    pinchState.startScale = graphGroup.scale.x;
-    _midPos.lerpVectors(_c0Pos, _c1Pos, 0.5);
-    pinchState.startMid.copy(_midPos);
-    pinchState.startGroupPos.copy(graphGroup.position);
-  }
-}
+controller0.addEventListener('selectstart', () => { pinchState.right = true; });
+controller1.addEventListener('selectstart', () => { pinchState.left = true; });
 
 renderer.xr.addEventListener('sessionstart', () => {
   controls.enabled = false;
@@ -736,17 +724,28 @@ function animate() {
     composer.render();
   } else {
     // Two-handed pinch-to-zoom + drag
-    if (pinchState.left && pinchState.right && pinchState.startDist > 0.01) {
+    if (pinchState.left && pinchState.right) {
       controller0.getWorldPosition(_c0Pos);
       controller1.getWorldPosition(_c1Pos);
-      const curDist = _c0Pos.distanceTo(_c1Pos);
-      const scale = Math.min(Math.max(pinchState.startScale * (curDist / pinchState.startDist), 0.2), 5);
-      graphGroup.scale.setScalar(scale);
-      // Drag: move graph to follow midpoint
-      _midPos.lerpVectors(_c0Pos, _c1Pos, 0.5);
-      graphGroup.position.copy(pinchState.startGroupPos).add(
-        _midPos.clone().sub(pinchState.startMid)
-      );
+      if (!pinchState.active) {
+        // Capture start state on first frame (matrices are current)
+        pinchState.startDist = _c0Pos.distanceTo(_c1Pos);
+        pinchState.startScale = graphGroup.scale.x;
+        _midPos.lerpVectors(_c0Pos, _c1Pos, 0.5);
+        pinchState.startMid.copy(_midPos);
+        pinchState.startGroupPos.copy(graphGroup.position);
+        pinchState.active = pinchState.startDist > 0.01;
+      } else {
+        const curDist = _c0Pos.distanceTo(_c1Pos);
+        const scale = Math.min(Math.max(pinchState.startScale * (curDist / pinchState.startDist), 0.2), 5);
+        graphGroup.scale.setScalar(scale);
+        _midPos.lerpVectors(_c0Pos, _c1Pos, 0.5);
+        graphGroup.position.copy(pinchState.startGroupPos).add(
+          _midPos.clone().sub(pinchState.startMid)
+        );
+      }
+    } else {
+      pinchState.active = false;
     }
 
     // VR raycasting from both controllers, pick closest hit

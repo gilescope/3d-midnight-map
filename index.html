@@ -673,10 +673,9 @@ function animate() {
   // Update edge lines
   for (const e of edgeData) {
     const pa = e.geo.attributes.position.array;
-    e.src.mesh.getWorldPosition(_diff);
-    pa[0] = _diff.x; pa[1] = _diff.y; pa[2] = _diff.z;
-    e.tgt.mesh.getWorldPosition(_diff);
-    pa[3] = _diff.x; pa[4] = _diff.y; pa[5] = _diff.z;
+    const sp = e.src.mesh.position, tp = e.tgt.mesh.position;
+    pa[0] = sp.x; pa[1] = sp.y; pa[2] = sp.z;
+    pa[3] = tp.x; pa[4] = tp.y; pa[5] = tp.z;
     e.geo.attributes.position.needsUpdate = true;
     // Pulse opacity
     e.line.material.opacity = 0.25 + 0.1 * Math.sin(t * 2 + e.phaseOffsets[0] * 10);
@@ -686,8 +685,8 @@ function animate() {
   let idx = 0;
   const _a = new THREE.Vector3(), _b = new THREE.Vector3();
   for (const e of edgeData) {
-    e.src.mesh.getWorldPosition(_a);
-    e.tgt.mesh.getWorldPosition(_b);
+    _a.copy(e.src.mesh.position);
+    _b.copy(e.tgt.mesh.position);
     for (let p = 0; p < PARTICLES_PER_EDGE; p++) {
       const phase = ((t * e.speed + e.phaseOffsets[p]) % 1 + 1) % 1;
       dummy.position.lerpVectors(_a, _b, phase);

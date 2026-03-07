@@ -229,7 +229,7 @@ const controller1 = renderer.xr.getController(1);
 scene.add(controller0);
 scene.add(controller1);
 // Pitch ray down to match natural hand angle on visionOS (+X = down in controller space)
-const RAY_PITCH = 20 * Math.PI / 180;
+const RAY_PITCH = 90 * Math.PI / 180;
 const rayEnd = new THREE.Vector3(Math.sin(RAY_PITCH) * 8, 0, Math.cos(RAY_PITCH) * -8);
 const rayGeo = new THREE.BufferGeometry().setFromPoints([
   new THREE.Vector3(0, 0, 0), rayEnd

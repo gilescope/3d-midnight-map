@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MIDNIGHT // 3D Architecture Map</title>
+  <title>MIDNIGHT // P2P Network</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap');
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -36,7 +36,7 @@
     #info-panel {
       position: absolute; top: 50%; right: 30px; transform: translateY(-50%);
       background: rgba(5,5,16,0.9); border: 1px solid #00fff233;
-      padding: 20px; font-size: 13px; max-width: 260px;
+      padding: 20px; font-size: 13px; max-width: 300px;
       display: none; backdrop-filter: blur(10px); pointer-events: auto;
       line-height: 1.6;
     }
@@ -67,14 +67,14 @@
 <body>
 
 <div id="hud">
-  <div id="title">MIDNIGHT <span>//</span> NETWORK</div>
-  <div id="subtitle">Architecture Map</div>
+  <div id="title">MIDNIGHT <span>//</span> P2P</div>
+  <div id="subtitle">Connecting...</div>
   <div id="legend">
-    <div class="legend-item"><div class="legend-dot" style="color:#00fff2;background:#00fff2"></div> Core</div>
-    <div class="legend-item"><div class="legend-dot" style="color:#ff00ff;background:#ff00ff"></div> Zero Knowledge</div>
-    <div class="legend-item"><div class="legend-dot" style="color:#ffd700;background:#ffd700"></div> Chain Integration</div>
-    <div class="legend-item"><div class="legend-dot" style="color:#00ff88;background:#00ff88"></div> Application</div>
-    <div class="legend-item"><div class="legend-dot" style="color:#ff6600;background:#ff6600"></div> Data Services</div>
+    <div class="legend-item"><div class="legend-dot" style="color:#00fff2;background:#00fff2"></div> Local Node</div>
+    <div class="legend-item"><div class="legend-dot" style="color:#ff00ff;background:#ff00ff"></div> Authority</div>
+    <div class="legend-item"><div class="legend-dot" style="color:#00ff88;background:#00ff88"></div> Full Node</div>
+    <div class="legend-item"><div class="legend-dot" style="color:#ffd700;background:#ffd700"></div> Light Client</div>
+    <div class="legend-item"><div class="legend-dot" style="color:#ff6600;background:#ff6600"></div> Unknown</div>
   </div>
   <div id="info-panel">
     <h3 id="info-title"></h3>
@@ -106,79 +106,55 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { Text } from 'troika-three-text';
 
 // ═══════════════════════════════════════════
-// GRAPH DATA
+// NETWORK DATA
 // ═══════════════════════════════════════════
 
 const LAYERS = {
-  core:  { color: new THREE.Color(0x00fff2), hex: '#00fff2', name: 'Core Infrastructure' },
-  zk:    { color: new THREE.Color(0xff00ff), hex: '#ff00ff', name: 'Zero Knowledge' },
-  chain: { color: new THREE.Color(0xffd700), hex: '#ffd700', name: 'Chain Integration' },
-  app:   { color: new THREE.Color(0x00ff88), hex: '#00ff88', name: 'Application Layer' },
-  data:  { color: new THREE.Color(0xff6600), hex: '#ff6600', name: 'Data Services' },
+  local:     { color: new THREE.Color(0x00fff2), hex: '#00fff2', name: 'Local Node' },
+  authority: { color: new THREE.Color(0xff00ff), hex: '#ff00ff', name: 'Authority' },
+  full:      { color: new THREE.Color(0x00ff88), hex: '#00ff88', name: 'Full Node' },
+  light:     { color: new THREE.Color(0xffd700), hex: '#ffd700', name: 'Light Client' },
+  unknown:   { color: new THREE.Color(0xff6600), hex: '#ff6600', name: 'Unknown' },
 };
 
-const LAYER_SEED = {
-  core:  [0, 0, 0],
-  zk:    [-8, 2, -4],
-  chain: [8, -1, -4],
-  app:   [-2, 7, 4],
-  data:  [3, -7, 4],
-};
+function roleToLayer(roles) {
+  if (!roles) return 'unknown';
+  const r = roles.toUpperCase();
+  if (r.includes('AUTHORITY')) return 'authority';
+  if (r.includes('FULL')) return 'full';
+  if (r.includes('LIGHT')) return 'light';
+  return 'unknown';
+}
 
-const NODES = [
-  { id: 'node',     label: 'Midnight Node',    layer: 'core',  size: 1.8 },
-  { id: 'runtime',  label: 'WASM Runtime',     layer: 'core',  size: 1.0 },
-  { id: 'consensus',label: 'Consensus',        layer: 'core',  size: 1.0 },
-  { id: 'p2p',      label: 'P2P Network',      layer: 'core',  size: 0.9 },
+function shortId(peerId) {
+  if (!peerId) return '???';
+  return peerId.slice(0, 8) + '...' + peerId.slice(-4);
+}
 
-  { id: 'compact',  label: 'Compact',          layer: 'zk',    size: 1.4 },
-  { id: 'compiler', label: 'Compiler',         layer: 'zk',    size: 1.0 },
-  { id: 'prover',   label: 'Proof Server',     layer: 'zk',    size: 1.3 },
-  { id: 'circuits', label: 'Circuits',         layer: 'zk',    size: 0.9 },
+const RPC_URL = 'wss://rpc.preview.midnight.network';
+let ws = null;
+let rpcId = 0;
+const rpcCallbacks = new Map();
+let localPeerId = null;
+let chainName = '';
+let mempoolCount = 0;
+let edges = [];
 
-  { id: 'cardano',  label: 'Cardano',          layer: 'chain', size: 1.4 },
-  { id: 'partner',  label: 'Partner Chains',   layer: 'chain', size: 1.1 },
-  { id: 'bridge',   label: 'Shield / Unshield',layer: 'chain', size: 1.0 },
-
-  { id: 'dapp',     label: 'DApp Connector',   layer: 'app',   size: 1.0 },
-  { id: 'lace',     label: 'Lace Wallet',      layer: 'app',   size: 1.1 },
-  { id: 'sdk',      label: 'Midnight.js',      layer: 'app',   size: 1.0 },
-
-  { id: 'indexer',  label: 'Indexer',           layer: 'data',  size: 1.0 },
-  { id: 'graphql',  label: 'GraphQL API',      layer: 'data',  size: 0.9 },
-  { id: 'pubsub',  label: 'Pub/Sub',           layer: 'data',  size: 0.9 },
-];
-
-const EDGES = [
-  ['node','runtime'],   ['node','consensus'],  ['node','p2p'],
-  ['runtime','compact'],['compact','compiler'],['compiler','prover'],
-  ['compiler','circuits'],['prover','node'],
-  ['node','partner'],  ['partner','cardano'],
-  ['node','bridge'],   ['bridge','cardano'],
-  ['node','dapp'],     ['dapp','lace'],        ['dapp','sdk'],
-  ['node','indexer'],  ['indexer','graphql'],   ['indexer','pubsub'],
-  ['sdk','graphql'],
-];
-
-const DESCS = {
-  node:      'Core blockchain node built on Substrate. Processes transactions and maintains shielded state.',
-  runtime:   'WebAssembly execution environment for the state transition function.',
-  consensus: 'Block production and finality via Cardano-secured Partner Chains consensus.',
-  p2p:       'libp2p networking layer. Block propagation and transaction gossip.',
-  compact:   'Domain-specific ZK language for privacy-preserving smart contracts.',
-  compiler:  'Compiles Compact programs into zero-knowledge circuits.',
-  prover:    'Generates ZK proofs for shielded transactions and contract execution.',
-  circuits:  'Pre-built circuit library for common cryptographic operations.',
-  cardano:   'Cardano mainchain providing security and cross-chain interoperability.',
-  partner:   'Framework enabling Midnight to leverage Cardano security guarantees.',
-  bridge:    'Token bridge between Midnight and Cardano via shield/unshield operations.',
-  dapp:      'Browser extension bridge connecting web apps to the Midnight network.',
-  lace:      'Lace wallet integration for managing Midnight assets.',
-  sdk:       'TypeScript SDK for building applications on Midnight.',
-  indexer:   'Chain indexing service for efficient querying of on-chain data.',
-  graphql:   'Structured query endpoint over indexed chain data.',
-  pubsub:    'Real-time subscription system for chain state changes.',
-};
+function rpcCall(method, params = []) {
+  return new Promise((resolve, reject) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      reject(new Error('Not connected'));
+      return;
+    }
+    const id = ++rpcId;
+    const timer = setTimeout(() => {
+      rpcCallbacks.delete(id);
+      reject(new Error('Timeout'));
+    }, 10000);
+    rpcCallbacks.set(id, { resolve, reject, timer });
+    ws.send(JSON.stringify({ jsonrpc: '2.0', id, method, params }));
+  });
+}
 
 // ═══════════════════════════════════════════
 // THREE.JS SETUP
@@ -289,132 +265,191 @@ function makeGlowTexture() {
 }
 
 const glowTex = makeGlowTexture();
+const ORBITRON_URL = 'https://fonts.gstatic.com/s/orbitron/v31/yMJRMIlzdpvBhQQL_Qq7dy0.woff2';
 
 // ═══════════════════════════════════════════
-// BUILD GRAPH
+// DYNAMIC GRAPH
 // ═══════════════════════════════════════════
 
 const nodeMap = new Map();
 const nodeMeshes = [];
 const labelEntries = [];
+const edgeData = [];
 const graphGroup = new THREE.Group();
 scene.add(graphGroup);
-
-// Create nodes
-for (const n of NODES) {
-  const layer = LAYERS[n.layer];
-  const seed = LAYER_SEED[n.layer];
-  const sz = n.size || 1;
-
-  // Position: seeded near layer center
-  const pos = new THREE.Vector3(
-    seed[0] + (Math.random() - 0.5) * 4,
-    seed[1] + (Math.random() - 0.5) * 4,
-    seed[2] + (Math.random() - 0.5) * 4
-  );
-
-  // Icosahedron mesh
-  const geo = new THREE.IcosahedronGeometry(sz * 0.5, sz > 1.3 ? 1 : 0);
-  const mat = new THREE.MeshStandardMaterial({
-    color: layer.color,
-    emissive: layer.color,
-    emissiveIntensity: 1.5,
-    metalness: 0.8,
-    roughness: 0.2,
-    transparent: true,
-    opacity: 0.9,
-  });
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.position.copy(pos);
-  graphGroup.add(mesh);
-
-  // Glow sprite
-  const glowMat = new THREE.SpriteMaterial({
-    map: glowTex, color: layer.color,
-    transparent: true, opacity: 0.6,
-    blending: THREE.AdditiveBlending, depthWrite: false,
-  });
-  const glow = new THREE.Sprite(glowMat);
-  glow.scale.setScalar(sz * 3);
-  mesh.add(glow);
-
-  // Label (troika SDF text - crisp at any distance in VR)
-  const label = new Text();
-  label.text = n.label;
-  label.fontSize = 0.28;
-  label.color = layer.hex;
-  label.anchorX = 'center';
-  label.anchorY = 'bottom';
-  label.position.y = sz * 0.5 + 0.5;
-  label.outlineWidth = '8%';
-  label.outlineColor = 0x000000;
-  label.outlineOpacity = 0.6;
-  label.depthOffset = -1;
-  label.font = 'https://fonts.gstatic.com/s/orbitron/v31/yMJRMIlzdpvBhQQL_Qq7dy0.woff2';
-  label.sync();
-  mesh.add(label);
-  labelEntries.push({ label, mesh });
-
-  const entry = {
-    ...n, pos, vel: new THREE.Vector3(), mesh, glow,
-    phase: Math.random() * Math.PI * 2,
-  };
-  nodeMap.set(n.id, entry);
-  nodeMeshes.push(mesh);
-  mesh.userData = { nodeId: n.id };
-}
-
-// Create edges
-const edgeData = [];
 const edgeGroup = new THREE.Group();
 graphGroup.add(edgeGroup);
 
-for (const [srcId, tgtId] of EDGES) {
-  const src = nodeMap.get(srcId), tgt = nodeMap.get(tgtId);
-  const srcColor = LAYERS[src.layer].color;
-  const tgtColor = LAYERS[tgt.layer].color;
-
-  // Line
-  const geo = new THREE.BufferGeometry();
-  const positions = new Float32Array(6);
-  const colors = new Float32Array(6);
-  srcColor.toArray(colors, 0);
-  tgtColor.toArray(colors, 3);
-  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-
-  const mat = new THREE.LineBasicMaterial({
-    vertexColors: true, transparent: true, opacity: 0.35,
-    blending: THREE.AdditiveBlending, depthWrite: false,
-  });
-  const line = new THREE.Line(geo, mat);
-  edgeGroup.add(line);
-
-  edgeData.push({
-    src, tgt, line, geo,
-    srcColor: srcColor.clone(), tgtColor: tgtColor.clone(),
-    speed: 0.2 + Math.random() * 0.3,
-    phaseOffsets: [Math.random(), Math.random(), Math.random()],
-  });
-}
-
-// Edge flow particles (InstancedMesh)
+// Particles: pre-allocate for up to 300 edges
 const PARTICLES_PER_EDGE = 3;
-const particleCount = EDGES.length * PARTICLES_PER_EDGE;
+const MAX_PARTICLES = 300 * PARTICLES_PER_EDGE;
 const pGeo = new THREE.SphereGeometry(0.06, 6, 6);
 const pMat = new THREE.MeshBasicMaterial({
   color: 0xffffff, transparent: true, opacity: 0.9,
   blending: THREE.AdditiveBlending, depthWrite: false,
 });
-const particles = new THREE.InstancedMesh(pGeo, pMat, particleCount);
+const particles = new THREE.InstancedMesh(pGeo, pMat, MAX_PARTICLES);
 particles.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+particles.count = 0;
 graphGroup.add(particles);
+
+// Saved positions across updates (peer ID -> Vector3)
+const savedPositions = new Map();
+
+function addNode(id, label, layer, size, extraData) {
+  if (nodeMap.has(id)) return;
+  const layerDef = LAYERS[layer] || LAYERS.unknown;
+  const sz = size || 1;
+
+  const saved = savedPositions.get(id);
+  const pos = saved ? saved.clone() : new THREE.Vector3(
+    (Math.random() - 0.5) * 12,
+    (Math.random() - 0.5) * 12,
+    (Math.random() - 0.5) * 12
+  );
+
+  const geo = new THREE.IcosahedronGeometry(sz * 0.5, sz > 1.3 ? 1 : 0);
+  const mat = new THREE.MeshStandardMaterial({
+    color: layerDef.color, emissive: layerDef.color, emissiveIntensity: 1.5,
+    metalness: 0.8, roughness: 0.2, transparent: true, opacity: 0.9,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.copy(pos);
+  graphGroup.add(mesh);
+
+  const glowMaterial = new THREE.SpriteMaterial({
+    map: glowTex, color: layerDef.color,
+    transparent: true, opacity: 0.6,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  const glow = new THREE.Sprite(glowMaterial);
+  glow.scale.setScalar(sz * 3);
+  mesh.add(glow);
+
+  const textLabel = new Text();
+  textLabel.text = label;
+  textLabel.fontSize = 0.28;
+  textLabel.color = layerDef.hex;
+  textLabel.anchorX = 'center';
+  textLabel.anchorY = 'bottom';
+  textLabel.position.y = sz * 0.5 + 0.5;
+  textLabel.outlineWidth = '8%';
+  textLabel.outlineColor = 0x000000;
+  textLabel.outlineOpacity = 0.6;
+  textLabel.depthOffset = -1;
+  textLabel.font = ORBITRON_URL;
+  textLabel.sync();
+  mesh.add(textLabel);
+  labelEntries.push({ label: textLabel, mesh });
+
+  const entry = {
+    id, label, layer, size: sz, pos, vel: new THREE.Vector3(),
+    mesh, glow, phase: Math.random() * Math.PI * 2,
+    ...extraData,
+  };
+  nodeMap.set(id, entry);
+  nodeMeshes.push(mesh);
+  mesh.userData = { nodeId: id };
+}
+
+function removeNode(id) {
+  const entry = nodeMap.get(id);
+  if (!entry) return;
+  savedPositions.set(id, entry.pos.clone());
+  graphGroup.remove(entry.mesh);
+  entry.mesh.geometry.dispose();
+  entry.mesh.material.dispose();
+  nodeMap.delete(id);
+  const mi = nodeMeshes.indexOf(entry.mesh);
+  if (mi >= 0) nodeMeshes.splice(mi, 1);
+  const li = labelEntries.findIndex(e => e.mesh === entry.mesh);
+  if (li >= 0) labelEntries.splice(li, 1);
+}
+
+function rebuildEdges() {
+  // Clear old edges
+  for (const e of edgeData) {
+    edgeGroup.remove(e.line);
+    e.geo.dispose();
+    e.line.material.dispose();
+  }
+  edgeData.length = 0;
+
+  for (const [srcId, tgtId] of edges) {
+    const src = nodeMap.get(srcId), tgt = nodeMap.get(tgtId);
+    if (!src || !tgt) continue;
+    const srcColor = (LAYERS[src.layer] || LAYERS.unknown).color;
+    const tgtColor = (LAYERS[tgt.layer] || LAYERS.unknown).color;
+
+    const geo = new THREE.BufferGeometry();
+    const positions = new Float32Array(6);
+    const colors = new Float32Array(6);
+    srcColor.toArray(colors, 0);
+    tgtColor.toArray(colors, 3);
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+    const mat = new THREE.LineBasicMaterial({
+      vertexColors: true, transparent: true, opacity: 0.35,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    const line = new THREE.Line(geo, mat);
+    edgeGroup.add(line);
+
+    edgeData.push({
+      src, tgt, line, geo,
+      speed: 0.2 + Math.random() * 0.3,
+      phaseOffsets: [Math.random(), Math.random(), Math.random()],
+    });
+  }
+  particles.count = Math.min(edgeData.length * PARTICLES_PER_EDGE, MAX_PARTICLES);
+}
+
+function updateGraph(localId, peers, pendingTxns) {
+  const subtitle = document.getElementById('subtitle');
+  subtitle.textContent = chainName + ' // ' + peers.length + ' peers // mempool: ' + pendingTxns;
+
+  // Determine which IDs should exist
+  const wantedIds = new Set([localId]);
+  for (const p of peers) wantedIds.add(p.peerId);
+
+  // Remove stale nodes
+  for (const id of nodeMap.keys()) {
+    if (!wantedIds.has(id)) removeNode(id);
+  }
+
+  // Add/update local node
+  addNode(localId, 'LOCAL NODE', 'local', 1.8, { bestNumber: '?', role: 'local', mempool: pendingTxns });
+  const localEntry = nodeMap.get(localId);
+  if (localEntry) localEntry.mempool = pendingTxns;
+
+  // Add/update peers
+  for (const p of peers) {
+    const layer = roleToLayer(p.roles);
+    addNode(p.peerId, shortId(p.peerId), layer, 1.0, {
+      bestNumber: p.bestNumber, bestHash: p.bestHash, role: p.roles,
+    });
+    // Update existing peer data
+    const entry = nodeMap.get(p.peerId);
+    if (entry) {
+      entry.bestNumber = p.bestNumber;
+      entry.bestHash = p.bestHash;
+      entry.role = p.roles;
+    }
+  }
+
+  // Edges: local -> each peer
+  edges = peers.map(p => [localId, p.peerId]);
+  rebuildEdges();
+
+  // Re-settle force layout
+  forceSettleSteps = 100;
+}
 
 // ═══════════════════════════════════════════
 // ENVIRONMENT
 // ═══════════════════════════════════════════
 
-// Ground grid
 const grid = new THREE.GridHelper(80, 80, 0x00fff2, 0x00fff2);
 grid.material.opacity = 0.06;
 grid.material.transparent = true;
@@ -422,7 +457,6 @@ grid.material.depthWrite = false;
 grid.position.y = -12;
 scene.add(grid);
 
-// Second grid overlay for depth
 const grid2 = new THREE.GridHelper(80, 20, 0xff00ff, 0xff00ff);
 grid2.material.opacity = 0.03;
 grid2.material.transparent = true;
@@ -430,7 +464,6 @@ grid2.material.depthWrite = false;
 grid2.position.y = -12.01;
 scene.add(grid2);
 
-// Background stars
 function makeStars(count, radius) {
   const geo = new THREE.BufferGeometry();
   const pos = new Float32Array(count * 3);
@@ -458,11 +491,12 @@ scene.add(stars1, stars2);
 // FORCE LAYOUT
 // ═══════════════════════════════════════════
 
-const allNodes = [...nodeMap.values()];
+let forceSettleSteps = 0;
 const repulsion = 40, attraction = 0.04, centering = 0.008, damping = 0.85, minDist = 0.5;
 const _diff = new THREE.Vector3();
 
 function forceStep() {
+  const allNodes = [...nodeMap.values()];
   // Repulsion
   for (let i = 0; i < allNodes.length; i++) {
     for (let j = i + 1; j < allNodes.length; j++) {
@@ -476,8 +510,9 @@ function forceStep() {
     }
   }
   // Attraction along edges
-  for (const [srcId, tgtId] of EDGES) {
+  for (const [srcId, tgtId] of edges) {
     const s = nodeMap.get(srcId), t = nodeMap.get(tgtId);
+    if (!s || !t) continue;
     _diff.subVectors(t.pos, s.pos);
     const d = _diff.length();
     const f = attraction * (d - 4);
@@ -492,9 +527,6 @@ function forceStep() {
     n.pos.add(n.vel);
   }
 }
-
-// Pre-simulate 300 steps
-for (let i = 0; i < 300; i++) forceStep();
 
 // ═══════════════════════════════════════════
 // INTERACTION
@@ -525,36 +557,41 @@ vrInfoText.outlineWidth = '6%';
 vrInfoText.outlineColor = 0x000000;
 vrInfoText.outlineOpacity = 0.8;
 vrInfoText.depthOffset = -1;
-vrInfoText.font = 'https://fonts.gstatic.com/s/orbitron/v31/yMJRMIlzdpvBhQQL_Qq7dy0.woff2';
+vrInfoText.font = ORBITRON_URL;
 vrInfoText.visible = false;
 scene.add(vrInfoText);
 
 function showInfo(nodeId) {
   const n = nodeMap.get(nodeId);
   if (!n) return;
-  const layer = LAYERS[n.layer];
+  const layer = LAYERS[n.layer] || LAYERS.unknown;
+
+  // Build description
+  const lines = [];
+  if (n.id === localPeerId) {
+    lines.push('Peer ID: ' + shortId(n.id));
+    lines.push('Mempool: ' + (n.mempool || 0) + ' pending txns');
+  } else {
+    lines.push('Peer ID: ' + shortId(n.id));
+    lines.push('Role: ' + (n.role || 'unknown'));
+    lines.push('Best block: #' + (n.bestNumber || '?'));
+    if (n.bestHash) lines.push('Hash: ' + shortId(n.bestHash));
+  }
+  const desc = lines.join('\n');
 
   // HTML panel (non-VR)
   infoTitle.textContent = n.label;
   infoTitle.style.color = layer.hex;
   infoLayer.textContent = layer.name;
   infoLayer.style.color = layer.hex;
-  infoDesc.textContent = DESCS[nodeId] || '';
-  const conns = EDGES
-    .filter(([s, t]) => s === nodeId || t === nodeId)
-    .map(([s, t]) => {
-      const other = s === nodeId ? t : s;
-      return nodeMap.get(other)?.label;
-    }).filter(Boolean);
-  infoConns.textContent = conns.length ? 'Connected: ' + conns.join(', ') : '';
+  infoDesc.textContent = desc;
+  infoConns.textContent = '';
   infoPanel.style.display = 'block';
   infoPanel.style.borderColor = layer.hex + '44';
 
   // VR 3D panel
   if (renderer.xr.isPresenting) {
-    const lines = [n.label, layer.name, '', DESCS[nodeId] || ''];
-    if (conns.length) lines.push('', 'Connected: ' + conns.join(', '));
-    vrInfoText.text = lines.join('\n');
+    vrInfoText.text = n.label + '\n' + layer.name + '\n\n' + desc;
     vrInfoText.color = layer.hex;
     vrInfoText.visible = true;
     vrInfoText.sync();
@@ -568,7 +605,6 @@ function hideInfo() {
 
 function highlightNode(nodeId) {
   if (hoveredNode === nodeId) {
-    // Gaze dwell: auto-select after staring long enough
     if (nodeId && nodeId !== selectedNode && gazeTarget === nodeId) {
       if (performance.now() - gazeStart >= GAZE_DWELL_MS) {
         selectedNode = nodeId;
@@ -577,7 +613,6 @@ function highlightNode(nodeId) {
     }
     return;
   }
-  // Reset previous
   if (hoveredNode) {
     const prev = nodeMap.get(hoveredNode);
     if (prev) {
@@ -586,7 +621,6 @@ function highlightNode(nodeId) {
     }
   }
   hoveredNode = nodeId;
-  // Reset gaze timer
   gazeTarget = nodeId;
   gazeStart = performance.now();
   if (nodeId) {
@@ -650,16 +684,18 @@ function animate() {
   const t = clock.getElapsedTime();
   const dt = Math.min(clock.getDelta(), 0.05);
 
-  // Gentle force simulation (keeps graph alive)
-  if (t < 30) forceStep(); // settle then stop
+  // Force simulation (settle after graph updates)
+  if (forceSettleSteps > 0) {
+    forceStep();
+    forceSettleSteps--;
+  }
 
   // Update node positions + floating bob
-  for (const n of allNodes) {
+  for (const n of nodeMap.values()) {
     n.mesh.position.copy(n.pos);
     n.mesh.position.y += Math.sin(t * 0.5 + n.phase) * 0.15;
     n.mesh.rotation.y = t * 0.2 + n.phase;
     n.mesh.rotation.x = Math.sin(t * 0.3 + n.phase) * 0.1;
-    // Pulse glow
     n.glow.material.opacity = 0.5 + 0.15 * Math.sin(t * 1.5 + n.phase);
   }
 
@@ -677,7 +713,6 @@ function animate() {
     pa[0] = sp.x; pa[1] = sp.y; pa[2] = sp.z;
     pa[3] = tp.x; pa[4] = tp.y; pa[5] = tp.z;
     e.geo.attributes.position.needsUpdate = true;
-    // Pulse opacity
     e.line.material.opacity = 0.25 + 0.1 * Math.sin(t * 2 + e.phaseOffsets[0] * 10);
   }
 
@@ -688,6 +723,7 @@ function animate() {
     _a.copy(e.src.mesh.position);
     _b.copy(e.tgt.mesh.position);
     for (let p = 0; p < PARTICLES_PER_EDGE; p++) {
+      if (idx >= MAX_PARTICLES) break;
       const phase = ((t * e.speed + e.phaseOffsets[p]) % 1 + 1) % 1;
       dummy.position.lerpVectors(_a, _b, phase);
       const fadeEdge = Math.sin(phase * Math.PI);
@@ -720,7 +756,7 @@ function animate() {
     controls.update();
     composer.render();
   } else {
-    // Two-handed pinch-to-zoom + drag (read XR input sources directly)
+    // Two-handed pinch-to-zoom + drag
     const session = renderer.xr.getSession();
     const sources = session ? session.inputSources : [];
     const selectingSources = [];
@@ -729,7 +765,6 @@ function animate() {
         selectingSources.push(src);
       }
     }
-    // Fallback: count controllers that are selecting via events
     const twoHands = selectingSources.length >= 2 ||
       (controller0.userData.selecting && controller1.userData.selecting);
     if (twoHands) {
@@ -788,6 +823,63 @@ function animate() {
 }
 
 renderer.setAnimationLoop(animate);
+
+// ═══════════════════════════════════════════
+// RPC CONNECTION
+// ═══════════════════════════════════════════
+
+function connectRpc() {
+  const subtitle = document.getElementById('subtitle');
+  subtitle.textContent = 'Connecting to ' + RPC_URL.replace('wss://', '') + '...';
+
+  ws = new WebSocket(RPC_URL);
+  ws.onopen = () => {
+    subtitle.textContent = 'Connected, fetching network...';
+    fetchNetworkData();
+  };
+  ws.onmessage = (evt) => {
+    const msg = JSON.parse(evt.data);
+    if (msg.id != null && rpcCallbacks.has(msg.id)) {
+      const cb = rpcCallbacks.get(msg.id);
+      clearTimeout(cb.timer);
+      rpcCallbacks.delete(msg.id);
+      if (msg.error) cb.reject(msg.error);
+      else cb.resolve(msg.result);
+    }
+  };
+  ws.onerror = () => {
+    subtitle.textContent = 'Connection error, retrying...';
+  };
+  ws.onclose = () => {
+    setTimeout(connectRpc, 5000);
+  };
+}
+
+async function fetchNetworkData() {
+  try {
+    const results = await Promise.all([
+      rpcCall('system_localPeerId'),
+      rpcCall('system_peers'),
+      rpcCall('system_chain'),
+      rpcCall('author_pendingExtrinsics').catch(() => []),
+    ]);
+    localPeerId = results[0];
+    const peers = results[1];
+    chainName = results[2];
+    mempoolCount = results[3].length;
+
+    updateGraph(localPeerId, peers, mempoolCount);
+  } catch (e) {
+    console.error('RPC error:', e);
+    document.getElementById('subtitle').textContent = 'RPC error: ' + e.message;
+  }
+  // Poll every 15 seconds
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    setTimeout(fetchNetworkData, 15000);
+  }
+}
+
+connectRpc();
 
 // ═══════════════════════════════════════════
 // RESIZE

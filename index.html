@@ -154,47 +154,57 @@ function parseMcshDigest(digestLogs) {
   return null;
 }
 
-async function fetchCardanoBlock(hash) {
-  if (cardanoBlocks.has(hash)) return;
-  if (pendingCardanoFetches.has(hash)) return pendingCardanoFetches.get(hash);
-  const p = (async () => {
-    try {
-      const resp = await fetch('https://preview.koios.rest/api/v1/block_info', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ _block_hashes: [hash] }),
-      });
-      const data = await resp.json();
-      console.log('Koios response for', hash.slice(0, 16), ':', data.length, 'results', resp.status);
-      if (data.length > 0) {
-        const info = data[0];
-        const nodeId = 'cardano-' + hash.slice(0, 16);
-        const cb = {
-          hash, height: info.block_height, epoch: info.epoch_no,
-          slot: info.abs_slot, txCount: info.tx_count, pool: info.pool,
-          nodeId, referencedBy: new Set(),
-        };
-        cardanoBlocks.set(hash, cb);
-        const pos = new THREE.Vector3(0, CARDANO_Y_OFFSET, 0);
-        addNode(nodeId, 'C#' + cb.height, COLORS.cardano, HEX.cardano, 1.0, pos, {
-          type: 'cardano', cardanoHash: hash, height: cb.height,
-          epoch: cb.epoch, slot: cb.slot, txCount: cb.txCount, pool: cb.pool,
-        });
-        cardanoBlockList.push(cb);
-        cardanoBlockList.sort((a, b) => b.height - a.height);
-        repositionCardanoBlocks();
-        updateSubtitle();
-      } else {
-        cardanoBlocks.set(hash, null);
+function getOrCreateCardanoNode(hash) {
+  if (cardanoBlocks.has(hash)) return cardanoBlocks.get(hash);
+  const nodeId = 'cardano-' + hash.slice(0, 16);
+  const cb = {
+    hash, height: null, epoch: null, slot: null, txCount: null, pool: null,
+    nodeId, referencedBy: new Set(),
+  };
+  cardanoBlocks.set(hash, cb);
+  const pos = new THREE.Vector3(0, CARDANO_Y_OFFSET, 0);
+  addNode(nodeId, shortHash(hash), COLORS.cardano, HEX.cardano, 1.0, pos, {
+    type: 'cardano', cardanoHash: hash, height: null,
+    epoch: null, slot: null, txCount: null, pool: null,
+  });
+  cardanoBlockList.push(cb);
+  cardanoBlockList.sort((a, b) => (b.height || 0) - (a.height || 0));
+  repositionCardanoBlocks();
+  updateSubtitle();
+  // Enrich with Koios data asynchronously
+  enrichCardanoBlock(hash, nodeId, cb);
+  return cb;
+}
+
+async function enrichCardanoBlock(hash, nodeId, cb) {
+  try {
+    const resp = await fetch('https://preview.koios.rest/api/v1/block_info', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ _block_hashes: [hash] }),
+    });
+    const data = await resp.json();
+    console.log('Koios response for', hash.slice(0, 16), ':', Array.isArray(data) ? data.length + ' results' : typeof data, resp.status);
+    if (Array.isArray(data) && data.length > 0) {
+      const info = data[0];
+      cb.height = info.block_height;
+      cb.epoch = info.epoch_no;
+      cb.slot = info.abs_slot;
+      cb.txCount = info.tx_count;
+      cb.pool = info.pool;
+      // Update the node label and data
+      const entry = nodeMap.get(nodeId);
+      if (entry) {
+        Object.assign(entry, { height: cb.height, epoch: cb.epoch, slot: cb.slot, txCount: cb.txCount, pool: cb.pool });
+        const li = labelEntries.find(e => e.mesh === entry.mesh);
+        if (li) { li.label.text = 'C#' + cb.height; li.label.sync(); }
       }
-    } catch (e) {
-      console.error('Koios error:', e);
-    } finally {
-      pendingCardanoFetches.delete(hash);
+      cardanoBlockList.sort((a, b) => (b.height || 0) - (a.height || 0));
+      repositionCardanoBlocks();
     }
-  })();
-  pendingCardanoFetches.set(hash, p);
-  return p;
+  } catch (e) {
+    console.error('Koios error:', e);
+  }
 }
 
 function rpcCall(method, params = []) {
@@ -507,22 +517,12 @@ function addBlock(number, hash, extrinsics, digestLogs) {
   // Parse mcsh digest for Cardano block reference
   if (digestLogs) {
     const mcshHash = parseMcshDigest(digestLogs);
-    console.log('mcsh for block', number, ':', mcshHash ? mcshHash.slice(0, 16) + '...' : 'NOT FOUND', 'logs:', digestLogs.length);
     if (mcshHash) {
       bd.cardanoHash = mcshHash;
-      fetchCardanoBlock(mcshHash).then(() => {
-        const cb = cardanoBlocks.get(mcshHash);
-        console.log('Cardano fetch done for', mcshHash.slice(0, 16), ':', cb ? 'OK height=' + cb.height : 'null');
-        if (cb && cb.nodeId) {
-          cb.referencedBy.add(number);
-          bd.cardanoNodeId = cb.nodeId;
-          rebuildAllEdges();
-          forceSettleSteps = 150;
-        }
-      });
+      const cb = getOrCreateCardanoNode(mcshHash);
+      cb.referencedBy.add(number);
+      bd.cardanoNodeId = cb.nodeId;
     }
-  } else {
-    console.log('No digestLogs for block', number);
   }
 
   // Reposition all blocks along X axis

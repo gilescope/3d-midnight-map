@@ -460,11 +460,12 @@ function addBlock(number, hash, extrinsics, digestLogs) {
   const extNodeIds = [];
   const extCount = extrinsics.length;
   const blockSize = 1.2 + Math.min(extCount * 0.1, 0.8);
+  const totalBytes = extrinsics.reduce((sum, hex) => sum + (hex.length - 2) / 2, 0);
 
   // Block position: newest at x=0, will be shifted
   const pos = new THREE.Vector3(0, 0, 0);
   addNode(blockId, '#' + number, COLORS.block, HEX.block, blockSize, pos, {
-    type: 'block', blockNumber: number, blockHash: hash, extCount,
+    type: 'block', blockNumber: number, blockHash: hash, extCount, totalBytes,
   });
 
   // Extrinsic nodes
@@ -737,12 +738,18 @@ function showInfo(nodeId) {
     layerName = bd && bd.finalized ? 'Finalized' : 'Unfinalized';
     desc = 'Hash: ' + shortHash(n.blockHash) +
       '\nExtrinsics: ' + n.extCount +
+      '\nTotal size: ' + n.totalBytes.toLocaleString() + ' bytes' +
       '\nStatus: ' + layerName +
       (bd && bd.cardanoHash ? '\nCardano: ' + shortHash(bd.cardanoHash) : '');
   } else if (n.type === 'extrinsic') {
+    const blockNode = nodeMap.get('block-' + n.blockNumber);
+    const pct = blockNode && blockNode.totalBytes > 0
+      ? (n.extBytes / blockNode.totalBytes * 100).toFixed(1) + '%'
+      : '?';
     title = 'Extrinsic ' + n.extIndex;
     layerName = 'Block #' + n.blockNumber;
-    desc = 'Size: ' + n.extBytes + ' bytes' +
+    desc = 'Size: ' + n.extBytes.toLocaleString() + ' bytes' +
+      '\nBlock share: ' + pct +
       '\nData: ' + (n.extHex ? n.extHex.slice(0, 40) + '...' : '?');
   } else if (n.type === 'cardano') {
     title = 'Cardano Block';

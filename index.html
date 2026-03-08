@@ -142,6 +142,141 @@ let rpcId = 0;
 const rpcCallbacks = new Map();
 let chainName = '';
 let lastFinalizedNumber = 0;
+let palletInfo = null;
+let maxBlockBytes = 3932160; // default: 75% of 5MB
+
+// ═══════════════════════════════════════════
+// SCALE DECODER (minimal, for metadata + extrinsics)
+// ═══════════════════════════════════════════
+
+class ScaleReader {
+  constructor(hex) {
+    const h = hex.startsWith('0x') ? hex.slice(2) : hex;
+    this.b = new Uint8Array(h.length / 2);
+    for (let i = 0; i < this.b.length; i++) this.b[i] = parseInt(h.substr(i * 2, 2), 16);
+    this.o = 0;
+  }
+  u8() { return this.b[this.o++]; }
+  u32() {
+    const v = this.b[this.o] | (this.b[this.o+1] << 8) | (this.b[this.o+2] << 16) | (this.b[this.o+3] << 24);
+    this.o += 4; return v >>> 0;
+  }
+  compact() {
+    const f = this.b[this.o], m = f & 3;
+    if (m === 0) { this.o++; return f >> 2; }
+    if (m === 1) { const v = (this.b[this.o] | (this.b[this.o+1] << 8)) >> 2; this.o += 2; return v; }
+    if (m === 2) { const v = (this.b[this.o] | (this.b[this.o+1] << 8) | (this.b[this.o+2] << 16) | (this.b[this.o+3] << 24)) >> 2; this.o += 4; return v >>> 0; }
+    const len = (f >> 2) + 4; this.o += 1 + len; return 0;
+  }
+  str() { const n = this.compact(); const s = new TextDecoder().decode(this.b.subarray(this.o, this.o + n)); this.o += n; return s; }
+  skip(n) { this.o += n; }
+  vec(fn) { const n = this.compact(), r = []; for (let i = 0; i < n; i++) r.push(fn()); return r; }
+  opt(fn) { return this.u8() ? fn() : null; }
+  bytes() { const n = this.compact(); this.o += n; }
+}
+
+function parseMetadata(hex) {
+  try {
+    const r = new ScaleReader(hex);
+    r.skip(4); // "meta" magic
+    const ver = r.u8();
+    if (ver !== 14 && ver !== 15) return null;
+    // Types registry: Vec<PortableType>
+    // Note: all type refs (UntrackedSymbol) use compact encoding
+    const variantTypes = {};
+    const skipFields = () => r.vec(() => { r.opt(() => r.str()); r.compact(); r.opt(() => r.str()); r.vec(() => r.str()); });
+    r.vec(() => {
+      const id = r.compact();
+      r.vec(() => r.str()); // path
+      r.vec(() => { r.str(); r.opt(() => r.compact()); }); // type_params
+      const def = r.u8();
+      let variants = null;
+      if (def === 0) skipFields(); // Composite
+      else if (def === 1) { // Variant
+        variants = r.vec(() => {
+          const name = r.str(); skipFields(); const idx = r.u8(); r.vec(() => r.str());
+          return { name, index: idx };
+        });
+      }
+      else if (def === 2) r.compact(); // Sequence
+      else if (def === 3) { r.u32(); r.compact(); } // Array: len(u32) + type(compact)
+      else if (def === 4) r.vec(() => r.compact()); // Tuple
+      else if (def === 5) r.u8(); // Primitive
+      else if (def === 6) r.compact(); // Compact
+      else if (def === 7) { r.compact(); r.compact(); } // BitSequence
+      r.vec(() => r.str()); // docs
+      if (variants) variantTypes[id] = variants;
+    });
+    // Pallets: Vec<PalletMetadata>
+    const pallets = {};
+    r.vec(() => {
+      const name = r.str();
+      r.opt(() => { r.str(); r.vec(() => { r.str(); r.u8(); const st = r.u8(); if (st === 0) r.compact(); else { r.vec(() => r.u8()); r.compact(); r.compact(); } r.bytes(); r.vec(() => r.str()); }); }); // storage
+      const callTy = r.opt(() => r.compact());
+      r.opt(() => r.compact()); // event
+      r.vec(() => { // constants
+        const cName = r.str(); r.compact();
+        const cLen = r.compact();
+        if (name === 'System' && cName === 'BlockLength' && cLen >= 4) {
+          maxBlockBytes = r.b[r.o] | (r.b[r.o+1] << 8) | (r.b[r.o+2] << 16) | (r.b[r.o+3] << 24);
+          console.log('BlockLength normal:', maxBlockBytes);
+        }
+        r.skip(cLen);
+        r.vec(() => r.str());
+      });
+      r.opt(() => r.compact()); // error
+      const index = r.u8();
+      let calls = null;
+      if (callTy !== null && variantTypes[callTy]) {
+        calls = {};
+        for (const v of variantTypes[callTy]) calls[v.index] = v.name;
+      }
+      pallets[index] = { name, calls };
+    });
+    console.log('Parsed metadata:', Object.keys(pallets).length, 'pallets');
+    return pallets;
+  } catch (e) {
+    console.error('Metadata parse error:', e);
+    return null;
+  }
+}
+
+function decodeExtrinsicCall(extHex) {
+  try {
+    const r = new ScaleReader(extHex);
+    r.compact(); // length prefix
+    const ver = r.u8();
+    const signed = (ver & 0x80) !== 0;
+    if (signed) {
+      const addrKind = r.u8();
+      if (addrKind === 0) r.skip(32); else return null;
+      const sigKind = r.u8();
+      if (sigKind <= 1) r.skip(64); else if (sigKind === 2) r.skip(65); else return null;
+      // Signed extensions (common Substrate: Era + compact nonce + compact tip)
+      const era = r.u8();
+      if (era !== 0) r.u8(); // mortal era = 2 bytes
+      r.compact(); // nonce
+      r.compact(); // tip
+    }
+    const palletIndex = r.u8();
+    const callIndex = r.u8();
+    // Validate against known pallets
+    if (palletInfo && !palletInfo[palletIndex]) return null;
+    return { palletIndex, callIndex };
+  } catch (e) {
+    return null;
+  }
+}
+
+function formatCallName(extHex) {
+  if (!palletInfo) return null;
+  const call = decodeExtrinsicCall(extHex);
+  if (!call) return null;
+  const pallet = palletInfo[call.palletIndex];
+  if (!pallet) return null;
+  const callName = pallet.calls ? pallet.calls[call.callIndex] : null;
+  return pallet.name + '.' + (callName || call.callIndex);
+}
 
 // Block tracking: ordered newest-first
 const blockList = [];
@@ -480,8 +615,9 @@ function addBlock(number, hash, extrinsics, digestLogs) {
       radius * Math.sin(angle),
       (Math.random() - 0.5) * 2
     );
-    addNode(extId, 'Ext ' + i, COLORS.extrinsic, HEX.extrinsic, 0.4, extPos, {
-      type: 'extrinsic', extIndex: i, extBytes, extHex, blockNumber: number,
+    const callName = formatCallName(extHex);
+    addNode(extId, callName || ('Ext ' + i), COLORS.extrinsic, HEX.extrinsic, 0.4, extPos, {
+      type: 'extrinsic', extIndex: i, extBytes, extHex, blockNumber: number, callName,
     });
     extNodeIds.push(extId);
   }
@@ -736,21 +872,19 @@ function showInfo(nodeId) {
     const bd = blockList.find(b => b.nodeId === nodeId);
     title = 'Midnight Block #' + n.blockNumber;
     layerName = bd && bd.finalized ? 'Finalized' : 'Unfinalized';
+    const fullness = (n.totalBytes / maxBlockBytes * 100).toFixed(2);
     desc = 'Hash: ' + shortHash(n.blockHash) +
       '\nExtrinsics: ' + n.extCount +
-      '\nTotal size: ' + n.totalBytes.toLocaleString() + ' bytes' +
+      '\nSize: ' + n.totalBytes.toLocaleString() + ' / ' + maxBlockBytes.toLocaleString() + ' bytes (' + fullness + '%)' +
       '\nStatus: ' + layerName +
       (bd && bd.cardanoHash ? '\nCardano: ' + shortHash(bd.cardanoHash) : '');
   } else if (n.type === 'extrinsic') {
-    const blockNode = nodeMap.get('block-' + n.blockNumber);
-    const pct = blockNode && blockNode.totalBytes > 0
-      ? (n.extBytes / blockNode.totalBytes * 100).toFixed(1) + '%'
-      : '?';
-    title = 'Extrinsic ' + n.extIndex;
+    const pct = (n.extBytes / maxBlockBytes * 100).toFixed(2) + '%';
+    title = n.callName || ('Extrinsic ' + n.extIndex);
     layerName = 'Block #' + n.blockNumber;
     desc = 'Size: ' + n.extBytes.toLocaleString() + ' bytes' +
-      '\nBlock share: ' + pct +
-      '\nData: ' + (n.extHex ? n.extHex.slice(0, 40) + '...' : '?');
+      '\nBlock capacity: ' + pct +
+      (n.callName ? '' : '\nData: ' + (n.extHex ? n.extHex.slice(0, 40) + '...' : '?'));
   } else if (n.type === 'cardano') {
     title = 'Cardano Block';
     layerName = 'Partner Chain';
@@ -1044,6 +1178,14 @@ function connectRpc() {
     subtitle.textContent = 'Connected, subscribing...';
     try {
       chainName = await rpcCall('system_chain');
+
+      // Fetch and parse runtime metadata for extrinsic type decoding
+      try {
+        const metaHex = await rpcCall('state_getMetadata');
+        palletInfo = parseMetadata(metaHex);
+      } catch (e) {
+        console.warn('Metadata fetch failed:', e);
+      }
 
       // Subscribe to new (unfinalized) heads
       await rpcCall('chain_subscribeNewHeads');

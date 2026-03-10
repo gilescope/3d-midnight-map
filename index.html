@@ -171,9 +171,12 @@ class ScaleReader {
     if (m === 0) { this.o++; return f >> 2; }
     if (m === 1) { const v = (this.b[this.o] | (this.b[this.o+1] << 8)) >> 2; this.o += 2; return v; }
     if (m === 2) { const v = (this.b[this.o] | (this.b[this.o+1] << 8) | (this.b[this.o+2] << 16) | (this.b[this.o+3] << 24)) >> 2; this.o += 4; return v >>> 0; }
-    const len = (f >> 2) + 4; this.o += 1 + len; return 0;
+    const len = (f >> 2) + 4; this.o++; let v = 0n; for (let i = 0; i < len; i++) v |= BigInt(this.b[this.o + i]) << BigInt(i * 8); this.o += len; return Number(v);
   }
   str() { const n = this.compact(); const s = new TextDecoder().decode(this.b.subarray(this.o, this.o + n)); this.o += n; return s; }
+  u16() { const v = this.b[this.o] | (this.b[this.o+1] << 8); this.o += 2; return v; }
+  hex(n) { const s = Array.from(this.b.subarray(this.o, this.o + n), b => b.toString(16).padStart(2, '0')).join(''); this.o += n; return '0x' + s; }
+  bigU(n) { let v = 0n; for (let i = 0; i < n; i++) v |= BigInt(this.b[this.o + i]) << BigInt(i * 8); this.o += n; return v; }
   skip(n) { this.o += n; }
   vec(fn) { const n = this.compact(), r = []; for (let i = 0; i < n; i++) r.push(fn()); return r; }
   opt(fn) { return this.u8() ? fn() : null; }
@@ -191,8 +194,8 @@ function parseMetadata(hex) {
     // Types registry: Vec<PortableType> — store full type defs for event decoding
     const types = {};
     const readFields = () => r.vec(() => {
-      r.opt(() => r.str()); const ty = r.compact(); r.opt(() => r.str()); r.vec(() => r.str());
-      return ty;
+      const n = r.opt(() => r.str()); const ty = r.compact(); r.opt(() => r.str()); r.vec(() => r.str());
+      return { n, t: ty };
     });
     r.vec(() => {
       const id = r.compact();
@@ -208,7 +211,7 @@ function parseMetadata(hex) {
       }
       else if (def === 2) { types[id] = { k: 's', t: r.compact() }; } // Sequence
       else if (def === 3) { const len = r.u32(); types[id] = { k: 'a', len, t: r.compact() }; } // Array
-      else if (def === 4) { types[id] = { k: 'tu', f: r.vec(() => r.compact()) }; } // Tuple
+      else if (def === 4) { types[id] = { k: 'tu', f: r.vec(() => ({ n: null, t: r.compact() })) }; } // Tuple
       else if (def === 5) { types[id] = { k: 'p', p: r.u8() }; } // Primitive
       else if (def === 6) { types[id] = { k: 'co', t: r.compact() }; } // Compact
       else if (def === 7) { r.compact(); r.compact(); types[id] = { k: 'bs' }; } // BitSequence
@@ -260,20 +263,106 @@ function skipScaleType(r, tid) {
   const t = typesRegistry[tid];
   if (!t) { r.skip(1); return; } // unknown: skip 1 byte and hope
   switch (t.k) {
-    case 'c': for (const f of t.f) skipScaleType(r, f); break; // composite
+    case 'c': for (const f of t.f) skipScaleType(r, f.t); break; // composite
     case 'v': { // variant
       const idx = r.u8();
       const vr = t.v.find(v => v.index === idx);
-      if (vr) for (const f of vr.f) skipScaleType(r, f);
+      if (vr) for (const f of vr.f) skipScaleType(r, f.t);
       break;
     }
     case 's': r.vec(() => skipScaleType(r, t.t)); break; // sequence/vec
     case 'a': for (let i = 0; i < t.len; i++) skipScaleType(r, t.t); break; // array
-    case 'tu': for (const f of t.f) skipScaleType(r, f); break; // tuple
+    case 'tu': for (const f of t.f) skipScaleType(r, f.t); break; // tuple
     case 'p': t.p === 2 ? r.str() : r.skip(PRIM_SIZES[t.p]); break; // primitive
     case 'co': r.compact(); break; // compact
     case 'bs': { const bits = r.compact(); r.skip(Math.ceil(bits / 8)); break; } // bitsequence
   }
+}
+
+// Read a SCALE-encoded value and return decoded JS value
+function readScaleType(r, tid, depth) {
+  if (depth > 10 || r.o >= r.b.length) return '?';
+  const t = typesRegistry[tid];
+  if (!t) return r.u8();
+  switch (t.k) {
+    case 'c': {
+      if (t.f.length === 0) return {};
+      const obj = {};
+      for (const f of t.f) obj[f.n || '_'] = readScaleType(r, f.t, depth + 1);
+      return t.f.length === 1 && !t.f[0].n ? obj['_'] : obj;
+    }
+    case 'v': {
+      const idx = r.u8();
+      const vr = t.v.find(v => v.index === idx);
+      if (!vr) return `variant(${idx})`;
+      if (vr.f.length === 0) return vr.name;
+      const fields = {};
+      for (const f of vr.f) fields[f.n || '_'] = readScaleType(r, f.t, depth + 1);
+      return { [vr.name]: vr.f.length === 1 && !vr.f[0].n ? fields['_'] : fields };
+    }
+    case 's': {
+      const inner = typesRegistry[t.t];
+      if (inner?.k === 'p' && inner.p === 3) { const n = r.compact(); return r.hex(n); }
+      return r.vec(() => readScaleType(r, t.t, depth + 1));
+    }
+    case 'a': {
+      const inner = typesRegistry[t.t];
+      if (inner?.k === 'p' && inner.p === 3) return r.hex(t.len); // [u8; N] → hex
+      const arr = [];
+      for (let i = 0; i < t.len; i++) arr.push(readScaleType(r, t.t, depth + 1));
+      return arr;
+    }
+    case 'tu': {
+      const arr = [];
+      for (const f of t.f) arr.push(readScaleType(r, f.t, depth + 1));
+      return arr.length === 1 ? arr[0] : arr;
+    }
+    case 'p': {
+      if (t.p === 0) return r.u8() !== 0; // bool
+      if (t.p === 1) return r.u32(); // char
+      if (t.p === 2) return r.str(); // str
+      if (t.p === 3) return r.u8(); // u8
+      if (t.p === 4) return r.u16(); // u16
+      if (t.p === 5) return r.u32(); // u32
+      if (t.p >= 6 && t.p <= 8) return r.bigU(PRIM_SIZES[t.p]).toString(); // u64/u128/u256
+      if (t.p === 9) return r.u8(); // i8
+      if (t.p === 10) return r.u16(); // i16
+      if (t.p === 11) return r.u32(); // i32
+      if (t.p >= 12) return r.bigU(PRIM_SIZES[t.p]).toString(); // i64/i128/i256
+      return '?';
+    }
+    case 'co': return r.compact();
+    case 'bs': { const bits = r.compact(); r.skip(Math.ceil(bits / 8)); return `${bits}bits`; }
+  }
+  return '?';
+}
+
+function decodeEventFields(hex, fieldTypes) {
+  const r = new ScaleReader(hex);
+  const fields = {};
+  for (const f of fieldTypes) {
+    const key = f.n || `field_${Object.keys(fields).length}`;
+    fields[key] = readScaleType(r, f.t, 0);
+  }
+  return fields;
+}
+
+function formatEventFields(obj, indent) {
+  const pad = '  '.repeat(indent || 0);
+  const lines = [];
+  for (const [k, v] of Object.entries(obj)) {
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      lines.push(pad + k + ':');
+      lines.push(formatEventFields(v, (indent || 0) + 1));
+    } else if (Array.isArray(v)) {
+      lines.push(pad + k + ': [' + v.join(', ').slice(0, 60) + (v.join(', ').length > 60 ? '...' : '') + ']');
+    } else {
+      let s = String(v);
+      if (s.startsWith('0x') && s.length > 20) s = s.slice(0, 10) + '..' + s.slice(-8);
+      lines.push(pad + k + ': ' + s);
+    }
+  }
+  return lines.join('\n');
 }
 
 // Decode System.Events storage → [{phase, extIndex, pallet, event, name}]
@@ -292,15 +381,24 @@ function decodeBlockEvents(eventsHex) {
       const pallet = palletInfo[palletIdx];
       const eventName = pallet?.events?.[eventIdx];
       const fullName = (pallet?.name || palletIdx) + '.' + (eventName || eventIdx);
-      // Skip event fields using type registry
+      // Capture field bytes for on-demand decoding, then skip past them
+      let fieldHex = null, fieldTypes = null;
       if (pallet?.eventTy && typesRegistry[pallet.eventTy]?.k === 'v') {
         const vr = typesRegistry[pallet.eventTy].v.find(v => v.index === eventIdx);
-        if (vr) { try { for (const f of vr.f) skipScaleType(r, f); } catch {} }
+        if (vr) {
+          fieldTypes = vr.f;
+          const startOff = r.o;
+          try { for (const f of vr.f) skipScaleType(r, f.t); } catch {}
+          if (r.o > startOff) {
+            const rawHex = eventsHex.startsWith('0x') ? eventsHex.slice(2) : eventsHex;
+            fieldHex = '0x' + rawHex.substr(startOff * 2, (r.o - startOff) * 2);
+          }
+        }
       }
       // Skip topics: Vec<H256>
       const topicCount = r.compact();
       r.skip(topicCount * 32);
-      events.push({ phase, extIndex, palletIdx, eventIdx, name: fullName });
+      events.push({ phase, extIndex, palletIdx, eventIdx, name: fullName, fieldHex, fieldTypes });
     }
     return events;
   } catch (e) {
@@ -457,8 +555,8 @@ const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.05;
 controls.autoRotate = false;
-controls.minDistance = 5;
-controls.maxDistance = 80;
+controls.minDistance = 1;
+controls.maxDistance = 5000;
 controls.target.set(-15, 0, 0);
 
 let composer = null;
@@ -779,7 +877,7 @@ function addBlock(number, hash, extrinsics, digestLogs, hasLedgerTxs = false) {
         );
         addNode(evId, ev.name.split('.')[1] || ev.name, COLORS.event, HEX.event, 0.35, evPos, {
           type: 'event', eventName: ev.name, blockNumber: number, extIndex: extIdx,
-          parentExtId,
+          parentExtId, fieldHex: ev.fieldHex, fieldTypes: ev.fieldTypes,
         });
         bd.eventNodeIds.push(evId);
       }
@@ -905,20 +1003,6 @@ function updateSubtitle() {
 // ═══════════════════════════════════════════
 // ENVIRONMENT
 // ═══════════════════════════════════════════
-
-const grid = new THREE.GridHelper(120, 120, 0x00fff2, 0x00fff2);
-grid.material.opacity = 0.06;
-grid.material.transparent = true;
-grid.material.depthWrite = false;
-grid.position.y = -12;
-scene.add(grid);
-
-const grid2 = new THREE.GridHelper(120, 30, 0xff00ff, 0xff00ff);
-grid2.material.opacity = 0.03;
-grid2.material.transparent = true;
-grid2.material.depthWrite = false;
-grid2.position.y = -12.01;
-scene.add(grid2);
 
 function makeStars(count, radius) {
   const geo = new THREE.BufferGeometry();
@@ -1057,7 +1141,16 @@ function showInfo(nodeId) {
   } else if (n.type === 'event') {
     title = n.eventName;
     layerName = 'Block #' + n.blockNumber + ' / Ext ' + n.extIndex;
-    desc = 'Event emitted by extrinsic';
+    if (n.fieldHex && n.fieldTypes && n.fieldTypes.length > 0) {
+      try {
+        const fields = decodeEventFields(n.fieldHex, n.fieldTypes);
+        desc = formatEventFields(fields);
+      } catch (e) {
+        desc = 'Event emitted by extrinsic\n(decode error: ' + e.message + ')';
+      }
+    } else {
+      desc = 'Event emitted by extrinsic';
+    }
   } else if (n.type === 'cardano') {
     title = 'Cardano Block';
     layerName = 'Partner Chain';
@@ -1177,7 +1270,7 @@ window.addEventListener('keydown', (e) => {
 window.addEventListener('keyup', (e) => keysDown.delete(e.key));
 
 function applyKeyboardMovement(dt) {
-  const speed = 20 * dt;
+  const speed = (keysDown.has('Shift') ? 200 : 20) * dt;
   const forward = new THREE.Vector3();
   camera.getWorldDirection(forward);
   forward.y = 0;
@@ -1313,10 +1406,7 @@ function animate() {
   }
   particles.instanceMatrix.needsUpdate = true;
 
-  stars1.rotation.y = t * 0.005;
-  stars2.rotation.y = -t * 0.003;
-  grid.position.z = (t * 0.5) % 1;
-
+  // Stars static — rotating background causes perceived drift without grid anchor
   if (!renderer.xr.isPresenting) {
     raycaster.setFromCamera(pointer, camera);
     const hits = raycaster.intersectObjects(nodeMeshes, false);

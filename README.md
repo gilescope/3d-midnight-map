@@ -6,14 +6,44 @@ A real-time 3D block explorer for the Midnight preview network, built with Three
 
 ## Features
 
+### Block Visualisation
+
 - Real-time block subscription via `chain_subscribeNewHeads` / `chain_subscribeFinalizedHeads`
 - Blocks shown as cyan (unfinalized) or gold (finalized) icosahedra
-- Extrinsics radiate from their parent block (magenta/orange)
+- Extrinsics radiate from their parent block (magenta/orange spheres)
+- Runtime events shown as green (#66ffcc) child nodes of their parent extrinsic
 - Cardano preview blocks (blue) linked to Midnight blocks via mcsh cross-chain references
-- Force-directed 3D layout with gentle spring physics
+- Force-directed 3D layout with gentle spring physics and chain-link edges
+- Backward chain scanner finds blocks with ledger transactions (batched GraphQL, up to 100 tx blocks)
+
+### Interaction
+
 - Double-click a block to open it in Polkadot.js Apps or CardanoScan
-- Apple Vision Pro support: both-hands pinch-to-zoom, gaze dwell-to-select
+- Hover over any node for detailed info panel (block stats, extrinsic size, event fields)
+- Event hover decodes full SCALE-encoded field data (e.g. UnshieldedTokens amounts, addresses)
+- WASD / arrow keys for camera movement, Q/E for vertical, Shift to run (3x speed)
+- Legend checkboxes to filter: Unfinalized, Finalized, Extrinsics, Events, Cardano, Empty Blocks
+
+### Data Sources
+
+- tDUST fee data from Midnight Indexer GraphQL API (`paidFees` / `estimatedFees`)
+- Block fullness: extrinsic byte size vs `BlockLength` constant from runtime metadata
+- SCALE metadata v14 types registry for full event field decoding
+- Cardano block data via [Koios REST API](https://preview.koios.rest)
+
+### VR / Apple Vision Pro
+
+- WebXR immersive-vr mode via VRButton
+- Both-hands pinch-to-zoom and drag
+- Gaze dwell-to-select nodes (ray from head direction)
+- 3D info panel follows gaze in VR
+- Bloom disabled in VR; emissive materials provide glow
+
+### Aesthetic
+
 - Cyberpunk aesthetic: bloom, scanlines, particle edges, Orbitron font
+- Neon colour scheme: cyan, gold, magenta, green, blue on dark background
+- Starfield background
 
 ## How It Works
 
@@ -55,6 +85,17 @@ From a Midnight preview block digest log:
 - Cardano hash: `0b6b87c5daace9a80cbd019b0ad3381a2c1b253b20dd969cadac0f93f830077a`
 - Confirmed as Cardano preview block #4087966 via [Koios API](https://preview.koios.rest/api/v1/block_info)
 
+### Runtime Events & SCALE Decoding
+
+Events are read from `System.Events` storage (`state_getStorage` with key `0x26aa...c9d7`). The app parses the runtime metadata v14 to build a full types registry (composite, variant, sequence, array, tuple, primitive, compact, bitsequence). Each `EventRecord` is decoded:
+
+```text
+EventRecord = Phase + Event(pallet_index, event_index, fields...) + Vec<Topic>
+Phase: ApplyExtrinsic(u32) | Finalization | Initialization
+```
+
+Field bytes are captured during bulk decode and decoded on-demand when hovering, using a type-aware SCALE reader that traverses the types registry to produce human-readable values (addresses as hex, amounts as decimal, nested structs expanded).
+
 ### Midnight Indexer
 
 Transaction fee data (tDUST) is fetched from the [Midnight Indexer](https://indexer.preview.midnight.network/api/v3/graphql) GraphQL API. For blocks containing ledger transactions (ZK proofs, contract calls), the indexer provides `paidFees` and `estimatedFees`. System extrinsics (Timestamp, consensus) don't carry dust fees.
@@ -64,6 +105,8 @@ Transaction fee data (tDUST) is fetched from the [Midnight Indexer](https://inde
     transactions { ... on RegularTransaction { fees { paidFees estimatedFees } } }
 } }
 ```
+
+The backward scanner uses batched GraphQL aliases (50 blocks per query, 10 parallel) to efficiently find blocks with `RegularTransaction`s across the chain history.
 
 ## Running Locally
 
@@ -79,6 +122,8 @@ Open <http://localhost:8080>. For Vision Pro WebXR testing, you need HTTPS (use 
 - [Troika-three-text](https://github.com/protectwise/troika/tree/main/packages/troika-three-text) for SDF text in VR
 - WebXR (VRButton, immersive-vr) for Apple Vision Pro
 - UnrealBloomPass for non-VR glow; emissive materials for VR
-- Substrate JSON-RPC over WebSocket
+- Substrate JSON-RPC over WebSocket (new heads, finalized heads, storage, metadata)
+- SCALE codec: full metadata v14 types registry with type-aware reader/skipper
 - Midnight Indexer GraphQL API for transaction fee data
+- Koios REST API for Cardano preview block data
 - Single `index.html` file, no build step

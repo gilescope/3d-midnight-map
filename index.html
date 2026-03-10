@@ -612,7 +612,7 @@ function rebuildEdges() {
 // BLOCK GRAPH MANAGEMENT
 // ═══════════════════════════════════════════
 
-function addBlock(number, hash, extrinsics, digestLogs) {
+function addBlock(number, hash, extrinsics, digestLogs, hasLedgerTxs = false) {
   // Don't add duplicates
   if (blockList.find(b => b.number === number)) return;
 
@@ -647,7 +647,7 @@ function addBlock(number, hash, extrinsics, digestLogs) {
     extNodeIds.push(extId);
   }
 
-  const bd = { number, hash, extrinsics, finalized: false, nodeId: blockId, extNodeIds, hasLedgerTxs: false };
+  const bd = { number, hash, extrinsics, finalized: false, nodeId: blockId, extNodeIds, hasLedgerTxs };
   // Insert sorted by block number (descending)
   const insertIdx = blockList.findIndex(b => b.number < number);
   if (insertIdx === -1) blockList.push(bd);
@@ -1319,10 +1319,7 @@ async function scanBackward(startHeight) {
     try {
       const hash = await rpcCall('chain_getBlockHash', [height]);
       const block = await rpcCall('chain_getBlock', [hash]);
-      addBlock(height, hash, block.block.extrinsics, block.block.header.digest.logs);
-      // Mark as having ledger txs
-      const bd = blockList.find(b => b.number === height);
-      if (bd) bd.hasLedgerTxs = true;
+      addBlock(height, hash, block.block.extrinsics, block.block.header.digest.logs, true);
     } catch (e) {
       console.warn('Scanner: failed to fetch block', height, e);
     }

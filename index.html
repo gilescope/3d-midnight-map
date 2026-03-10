@@ -1061,7 +1061,17 @@ function isBlockEmpty(entry) {
 }
 
 function getNodeFilter(entry) {
-  if (entry.type === 'cardano') return 'cardano';
+  if (entry.type === 'cardano') {
+    // Hide Cardano nodes when all linked Midnight blocks are hidden
+    if (!visibleFilters.empty) {
+      const cb = cardanoBlocks.get(entry.cardanoHash);
+      if (cb && ![...cb.referencedBy].some(num => {
+        const bd = blockList.find(b => b.number === num);
+        return bd && bd.hasLedgerTxs;
+      })) return 'empty';
+    }
+    return 'cardano';
+  }
   if (entry.type === 'extrinsic') {
     if (!visibleFilters.empty) {
       const parentBd = blockList.find(b => b.number === entry.blockNumber);
@@ -1242,90 +1252,75 @@ renderer.setAnimationLoop(animate);
 
 let scannerAbort = null;
 
-async function indexerBlockHasTxs(height) {
-  const query = `{ block(offset: { height: ${height} }) { height transactions { __typename } } }`;
+// Batch-check up to 50 blocks in a single GraphQL request using aliases
+async function batchCheckBlocks(heights) {
+  const aliases = heights.map((h, i) =>
+    `b${i}: block(offset: { height: ${h} }) { height transactions { __typename } }`
+  );
   const resp = await fetch(INDEXER_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query }),
+    body: JSON.stringify({ query: `{ ${aliases.join(' ')} }` }),
   });
   const json = await resp.json();
-  const txs = json?.data?.block?.transactions || [];
-  return txs.some(t => t.__typename === 'RegularTransaction');
+  if (json.errors) return [];
+  const hits = [];
+  for (const v of Object.values(json.data || {})) {
+    if (v && v.transactions.some(t => t.__typename === 'RegularTransaction')) {
+      hits.push(v.height);
+    }
+  }
+  return hits;
 }
 
 async function scanBackward(startHeight) {
   const controller = new AbortController();
   scannerAbort = controller;
-  const COARSE_STEP = 500;
-  const BATCH = 30;
-  const hits = new Set();
+  const BATCH_SIZE = 50;  // blocks per GraphQL query
+  const PARALLEL = 10;    // concurrent queries
+  const stride = BATCH_SIZE * PARALLEL; // 500 blocks per round
+  let totalFound = 0;
 
-  // Phase 1: coarse scan from startHeight down to 1
-  console.log('Scanner: coarse scan from', startHeight, 'step', COARSE_STEP);
-  for (let h = startHeight; h >= 1 && !controller.signal.aborted; h -= COARSE_STEP * BATCH) {
-    const batch = [];
-    for (let i = 0; i < BATCH; i++) {
-      const bh = h - i * COARSE_STEP;
-      if (bh >= 1) batch.push(bh);
-    }
-    const results = await Promise.all(batch.map(async bh => {
-      try { return { height: bh, hasTxs: await indexerBlockHasTxs(bh) }; }
-      catch { return { height: bh, hasTxs: false }; }
-    }));
-    for (const r of results) {
-      if (r.hasTxs) hits.add(r.height);
-    }
-  }
+  const MAX_TX_BLOCKS = 100;
+  console.log('Scanner: scanning backward from', startHeight, '(max', MAX_TX_BLOCKS, 'tx blocks)');
 
-  if (controller.signal.aborted) return;
-
-  // Phase 2: fine scan ±COARSE_STEP around each hit
-  console.log('Scanner: found', hits.size, 'coarse hits, fine scanning...');
-  for (const hitHeight of hits) {
-    if (controller.signal.aborted) break;
-    const lo = Math.max(1, hitHeight - COARSE_STEP);
-    const hi = hitHeight + COARSE_STEP;
-    for (let fh = lo; fh <= hi && !controller.signal.aborted; fh += BATCH) {
-      const batch = [];
-      for (let i = 0; i < BATCH; i++) {
-        const bh = fh + i;
-        if (bh <= hi && bh >= 1 && !hits.has(bh)) batch.push(bh);
+  for (let h = startHeight; h >= 1 && !controller.signal.aborted && totalFound < MAX_TX_BLOCKS; h -= stride) {
+    // Build parallel batches covering [h-stride+1 .. h]
+    const promises = [];
+    for (let p = 0; p < PARALLEL; p++) {
+      const batchStart = h - p * BATCH_SIZE;
+      const heights = [];
+      for (let i = 0; i < BATCH_SIZE; i++) {
+        const bh = batchStart - i;
+        if (bh >= 1) heights.push(bh);
       }
-      if (batch.length === 0) continue;
-      const results = await Promise.all(batch.map(async bh => {
-        try { return { height: bh, hasTxs: await indexerBlockHasTxs(bh) }; }
-        catch { return { height: bh, hasTxs: false }; }
-      }));
-      for (const r of results) {
-        if (r.hasTxs) hits.add(r.height);
+      if (heights.length > 0) {
+        promises.push(batchCheckBlocks(heights).catch(() => []));
       }
     }
-  }
+    const results = await Promise.all(promises);
+    const roundHits = results.flat();
 
-  if (controller.signal.aborted) return;
-
-  // Phase 3: fetch and add discovered blocks via RPC
-  const sorted = [...hits].sort((a, b) => b - a);
-  console.log('Scanner: adding', sorted.length, 'blocks with ledger txs:', sorted);
-  for (const height of sorted) {
-    if (controller.signal.aborted) break;
-    if (blockList.find(b => b.number === height)) {
-      // Already in graph — just mark it
-      const bd = blockList.find(b => b.number === height);
-      bd.hasLedgerTxs = true;
-      continue;
+    // Fetch and add discovered blocks immediately (progressive display)
+    for (const height of roundHits) {
+      if (controller.signal.aborted) break;
+      if (blockList.find(b => b.number === height)) {
+        const bd = blockList.find(b => b.number === height);
+        bd.hasLedgerTxs = true;
+        continue;
+      }
+      try {
+        const hash = await rpcCall('chain_getBlockHash', [height]);
+        const block = await rpcCall('chain_getBlock', [hash]);
+        addBlock(height, hash, block.block.extrinsics, block.block.header.digest.logs, true);
+        totalFound++;
+      } catch (e) {
+        console.warn('Scanner: block', height, 'fetch failed:', e);
+      }
     }
-    try {
-      const hash = await rpcCall('chain_getBlockHash', [height]);
-      const block = await rpcCall('chain_getBlock', [hash]);
-      addBlock(height, hash, block.block.extrinsics, block.block.header.digest.logs, true);
-    } catch (e) {
-      console.warn('Scanner: failed to fetch block', height, e);
-    }
+    if (roundHits.length > 0) applyFilters();
   }
-  console.log('Scanner: complete');
-  applyFilters();
+  console.log('Scanner: complete, found', totalFound, 'blocks with ledger txs');
 }
 
 // ═══════════════════════════════════════════

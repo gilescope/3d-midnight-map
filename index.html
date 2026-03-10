@@ -707,7 +707,7 @@ function addBlock(number, hash, extrinsics, digestLogs, hasLedgerTxs = false) {
       (Math.random() - 0.5) * 2
     );
     const callName = formatCallName(extHex);
-    addNode(extId, callName || ('Ext ' + i), COLORS.extrinsic, HEX.extrinsic, 0.4, extPos, {
+    addNode(extId, callName || ('Ext ' + i), COLORS.extrinsic, HEX.extrinsic, 0.5, extPos, {
       type: 'extrinsic', extIndex: i, extBytes, extHex, blockNumber: number, callName,
     });
     extNodeIds.push(extId);
@@ -777,7 +777,7 @@ function addBlock(number, hash, extrinsics, digestLogs, hasLedgerTxs = false) {
           parentEntry.pos.y + r2 * Math.sin(angle),
           parentEntry.pos.z + (Math.random() - 0.5)
         );
-        addNode(evId, ev.name.split('.')[1] || ev.name, COLORS.event, HEX.event, 0.2, evPos, {
+        addNode(evId, ev.name.split('.')[1] || ev.name, COLORS.event, HEX.event, 0.35, evPos, {
           type: 'event', eventName: ev.name, blockNumber: number, extIndex: extIdx,
           parentExtId,
         });

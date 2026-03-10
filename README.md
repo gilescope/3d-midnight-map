@@ -55,18 +55,15 @@ From a Midnight preview block digest log:
 - Cardano hash: `0b6b87c5daace9a80cbd019b0ad3381a2c1b253b20dd969cadac0f93f830077a`
 - Confirmed as Cardano preview block #4087966 via [Koios API](https://preview.koios.rest/api/v1/block_info)
 
-### Cardano Block Lookup
+### Midnight Indexer
 
-Cardano block info is fetched from the [Koios REST API](https://api.koios.rest/) (preview network, no API key needed):
+Transaction fee data (tDUST) is fetched from the [Midnight Indexer](https://indexer.preview.midnight.network/api/v3/graphql) GraphQL API. For blocks containing ledger transactions (ZK proofs, contract calls), the indexer provides `paidFees` and `estimatedFees`. System extrinsics (Timestamp, consensus) don't carry dust fees.
 
-```http
-POST https://preview.koios.rest/api/v1/block_info
-Content-Type: application/json
-
-{ "_block_hashes": ["0b6b87c5daace9a80cbd019b0ad3381a2c1b253b20dd969cadac0f93f830077a"] }
+```graphql
+{ block(offset: { height: 12345 }) {
+    transactions { ... on RegularTransaction { fees { paidFees estimatedFees } } }
+} }
 ```
-
-Returns block height, epoch, slot, transaction count, and pool info.
 
 ## Running Locally
 
@@ -83,5 +80,5 @@ Open <http://localhost:8080>. For Vision Pro WebXR testing, you need HTTPS (use 
 - WebXR (VRButton, immersive-vr) for Apple Vision Pro
 - UnrealBloomPass for non-VR glow; emissive materials for VR
 - Substrate JSON-RPC over WebSocket
-- Koios REST API for Cardano preview data
+- Midnight Indexer GraphQL API for transaction fee data
 - Single `index.html` file, no build step

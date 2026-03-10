@@ -76,6 +76,7 @@
     <label class="legend-item" style="color:#ffd700"><input type="checkbox" checked data-filter="finalized"><div class="legend-dot" style="color:#ffd700;background:#ffd700"></div> Finalized Blocks</label>
     <label class="legend-item" style="color:#ff00ff"><input type="checkbox" checked data-filter="extrinsic"><div class="legend-dot" style="color:#ff00ff;background:#ff00ff"></div> Extrinsics</label>
     <label class="legend-item" style="color:#4488ff"><input type="checkbox" checked data-filter="cardano"><div class="legend-dot" style="color:#4488ff;background:#4488ff"></div> Cardano Blocks</label>
+    <label class="legend-item" style="color:#555"><input type="checkbox" checked data-filter="empty"><div class="legend-dot" style="color:#555;background:#555"></div> Empty Blocks</label>
   </div>
   <div id="info-panel">
     <h3 id="info-title"></h3>
@@ -133,6 +134,7 @@ const HEX = {
 };
 
 const RPC_URL = 'wss://rpc.preview.midnight.network';
+const INDEXER_URL = 'https://indexer.preview.midnight.network/api/v3/graphql';
 const MAX_BLOCKS = 12;
 const BLOCK_SPACING = 6;
 const ORBITRON_URL = 'https://fonts.gstatic.com/s/orbitron/v31/yMJRMIlzdpvBhQQL_Qq7dy0.woff2';
@@ -278,9 +280,32 @@ function formatCallName(extHex) {
   return pallet.name + '.' + (callName || call.callIndex);
 }
 
+// Indexer: fetch ledger transaction fees for a block
+async function fetchBlockFees(blockHeight) {
+  try {
+    const query = `{ block(offset: { height: ${blockHeight} }) { transactions { hash ... on RegularTransaction { fees { paidFees estimatedFees } transactionResult { status } } } } }`;
+    const resp = await fetch(INDEXER_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query }),
+    });
+    const json = await resp.json();
+    const txs = json?.data?.block?.transactions || [];
+    const regular = txs.filter(t => t.fees);
+    if (regular.length === 0) return null;
+    const totalPaid = regular.reduce((s, t) => s + BigInt(t.fees.paidFees), 0n);
+    const totalEstimated = regular.reduce((s, t) => s + BigInt(t.fees.estimatedFees), 0n);
+    return { txCount: regular.length, totalPaid, totalEstimated, txs: regular };
+  } catch { return null; }
+}
+
+function formatDust(val) {
+  return Number(val).toLocaleString() + ' tDUST';
+}
+
 // Block tracking: ordered newest-first
 const blockList = [];
-// { number, hash, extrinsics: [hex...], finalized, nodeId, extNodeIds: [...] }
+// { number, hash, extrinsics: [hex...], finalized, nodeId, extNodeIds: [...], feeData }
 
 let edges = [];
 
@@ -622,9 +647,12 @@ function addBlock(number, hash, extrinsics, digestLogs) {
     extNodeIds.push(extId);
   }
 
-  const bd = { number, hash, extrinsics, finalized: false, nodeId: blockId, extNodeIds };
-  blockList.unshift(bd);
-  console.log('Blocks:', blockList.length, 'Nodes:', nodeMap.size, 'Latest:', number);
+  const bd = { number, hash, extrinsics, finalized: false, nodeId: blockId, extNodeIds, hasLedgerTxs: false };
+  // Insert sorted by block number (descending)
+  const insertIdx = blockList.findIndex(b => b.number < number);
+  if (insertIdx === -1) blockList.push(bd);
+  else blockList.splice(insertIdx, 0, bd);
+  console.log('Blocks:', blockList.length, 'Nodes:', nodeMap.size, 'Block:', number);
 
   // Check if already finalized
   if (number <= lastFinalizedNumber) {
@@ -644,6 +672,18 @@ function addBlock(number, hash, extrinsics, digestLogs) {
     }
   }
 
+  // Fetch fee data from indexer (async, non-blocking)
+  fetchBlockFees(number).then(feeData => {
+    if (feeData) {
+      bd.feeData = feeData;
+      bd.hasLedgerTxs = true;
+      const entry = nodeMap.get(blockId);
+      if (entry) entry.feeData = feeData;
+      if (!visibleFilters.empty) applyFilters();
+      if (selectedNode === blockId) showInfo(blockId);
+    }
+  });
+
   // Reposition all blocks along X axis
   repositionBlocks();
   applyFilters();
@@ -651,12 +691,15 @@ function addBlock(number, hash, extrinsics, digestLogs) {
 }
 
 function repositionBlocks() {
+  let visIdx = 0;
   for (let i = 0; i < blockList.length; i++) {
     const bd = blockList[i];
     const entry = nodeMap.get(bd.nodeId);
     if (!entry) continue;
-    const targetX = -i * BLOCK_SPACING;
+    if (!entry.mesh.visible) { entry.targetX = undefined; continue; }
+    const targetX = -visIdx * BLOCK_SPACING;
     entry.targetX = targetX;
+    visIdx++;
     // Set initial position for new nodes
     if (i === 0 && Math.abs(entry.pos.x) < 0.01 && Math.abs(entry.pos.y) < 0.01) {
       entry.pos.x = targetX;
@@ -690,9 +733,14 @@ function repositionCardanoBlocks() {
 
 function rebuildAllEdges() {
   edges = [];
-  // Chain links between consecutive blocks
-  for (let i = 0; i < blockList.length - 1; i++) {
-    edges.push([blockList[i].nodeId, blockList[i + 1].nodeId]);
+  // Chain links between visible consecutive blocks
+  let prevVisible = null;
+  for (let i = 0; i < blockList.length; i++) {
+    const entry = nodeMap.get(blockList[i].nodeId);
+    if (entry && entry.mesh.visible) {
+      if (prevVisible !== null) edges.push([prevVisible, blockList[i].nodeId]);
+      prevVisible = blockList[i].nodeId;
+    }
   }
   // Block -> extrinsic links
   for (const bd of blockList) {
@@ -704,9 +752,14 @@ function rebuildAllEdges() {
       edges.push([bd.nodeId, bd.cardanoNodeId]);
     }
   }
-  // Cardano chain links
-  for (let i = 0; i < cardanoBlockList.length - 1; i++) {
-    edges.push([cardanoBlockList[i].nodeId, cardanoBlockList[i + 1].nodeId]);
+  // Cardano chain links (between visible nodes)
+  let prevCardano = null;
+  for (let i = 0; i < cardanoBlockList.length; i++) {
+    const entry = nodeMap.get(cardanoBlockList[i].nodeId);
+    if (entry && entry.mesh.visible) {
+      if (prevCardano !== null) edges.push([prevCardano, cardanoBlockList[i].nodeId]);
+      prevCardano = cardanoBlockList[i].nodeId;
+    }
   }
   rebuildEdges();
 }
@@ -873,10 +926,14 @@ function showInfo(nodeId) {
     title = 'Midnight Block #' + n.blockNumber;
     layerName = bd && bd.finalized ? 'Finalized' : 'Unfinalized';
     const fullness = (n.totalBytes / maxBlockBytes * 100).toFixed(2);
+    const feeInfo = n.feeData
+      ? '\nLedger Txs: ' + n.feeData.txCount + ' (fees: ' + formatDust(n.feeData.totalPaid) + ')'
+      : '';
     desc = 'Hash: ' + shortHash(n.blockHash) +
       '\nExtrinsics: ' + n.extCount +
       '\nSize: ' + n.totalBytes.toLocaleString() + ' / ' + maxBlockBytes.toLocaleString() + ' bytes (' + fullness + '%)' +
       '\nStatus: ' + layerName +
+      feeInfo +
       (bd && bd.cardanoHash ? '\nCardano: ' + shortHash(bd.cardanoHash) : '');
   } else if (n.type === 'extrinsic') {
     const pct = (n.extBytes / maxBlockBytes * 100).toFixed(2) + '%';
@@ -996,12 +1053,24 @@ controller1.addEventListener('selectend', () => { vrSelectNode(pinchState.active
 // LEGEND FILTERS
 // ═══════════════════════════════════════════
 
-const visibleFilters = { unfinalized: true, finalized: true, extrinsic: true, cardano: true };
+const visibleFilters = { unfinalized: true, finalized: true, extrinsic: true, cardano: true, empty: true };
+
+function isBlockEmpty(entry) {
+  const bd = blockList.find(b => b.nodeId === entry.id);
+  return bd && !bd.hasLedgerTxs;
+}
 
 function getNodeFilter(entry) {
   if (entry.type === 'cardano') return 'cardano';
-  if (entry.type === 'extrinsic') return 'extrinsic';
+  if (entry.type === 'extrinsic') {
+    if (!visibleFilters.empty) {
+      const parentBd = blockList.find(b => b.number === entry.blockNumber);
+      if (parentBd && !parentBd.hasLedgerTxs) return 'empty';
+    }
+    return 'extrinsic';
+  }
   if (entry.type === 'block') {
+    if (!visibleFilters.empty && isBlockEmpty(entry)) return 'empty';
     const bd = blockList.find(b => b.nodeId === entry.id);
     return bd && bd.finalized ? 'finalized' : 'unfinalized';
   }
@@ -1014,7 +1083,9 @@ function applyFilters() {
     const visible = filter ? visibleFilters[filter] : true;
     entry.mesh.visible = visible;
   }
-  // Rebuild edges so hidden nodes lose their connections
+  // Reposition visible blocks compactly, then rebuild edges
+  repositionBlocks();
+  repositionCardanoBlocks();
   rebuildAllEdges();
   forceSettleSteps = 150;
 }
@@ -1166,6 +1237,101 @@ function animate() {
 renderer.setAnimationLoop(animate);
 
 // ═══════════════════════════════════════════
+// BACKWARD SCANNER — find historical blocks with ledger txs
+// ═══════════════════════════════════════════
+
+let scannerAbort = null;
+
+async function indexerBlockHasTxs(height) {
+  const query = `{ block(offset: { height: ${height} }) { height transactions { __typename } } }`;
+  const resp = await fetch(INDEXER_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query }),
+  });
+  const json = await resp.json();
+  const txs = json?.data?.block?.transactions || [];
+  return txs.some(t => t.__typename === 'RegularTransaction');
+}
+
+async function scanBackward(startHeight) {
+  const controller = new AbortController();
+  scannerAbort = controller;
+  const COARSE_STEP = 500;
+  const BATCH = 30;
+  const hits = new Set();
+
+  // Phase 1: coarse scan from startHeight down to 1
+  console.log('Scanner: coarse scan from', startHeight, 'step', COARSE_STEP);
+  for (let h = startHeight; h >= 1 && !controller.signal.aborted; h -= COARSE_STEP * BATCH) {
+    const batch = [];
+    for (let i = 0; i < BATCH; i++) {
+      const bh = h - i * COARSE_STEP;
+      if (bh >= 1) batch.push(bh);
+    }
+    const results = await Promise.all(batch.map(async bh => {
+      try { return { height: bh, hasTxs: await indexerBlockHasTxs(bh) }; }
+      catch { return { height: bh, hasTxs: false }; }
+    }));
+    for (const r of results) {
+      if (r.hasTxs) hits.add(r.height);
+    }
+  }
+
+  if (controller.signal.aborted) return;
+
+  // Phase 2: fine scan ±COARSE_STEP around each hit
+  console.log('Scanner: found', hits.size, 'coarse hits, fine scanning...');
+  for (const hitHeight of hits) {
+    if (controller.signal.aborted) break;
+    const lo = Math.max(1, hitHeight - COARSE_STEP);
+    const hi = hitHeight + COARSE_STEP;
+    for (let fh = lo; fh <= hi && !controller.signal.aborted; fh += BATCH) {
+      const batch = [];
+      for (let i = 0; i < BATCH; i++) {
+        const bh = fh + i;
+        if (bh <= hi && bh >= 1 && !hits.has(bh)) batch.push(bh);
+      }
+      if (batch.length === 0) continue;
+      const results = await Promise.all(batch.map(async bh => {
+        try { return { height: bh, hasTxs: await indexerBlockHasTxs(bh) }; }
+        catch { return { height: bh, hasTxs: false }; }
+      }));
+      for (const r of results) {
+        if (r.hasTxs) hits.add(r.height);
+      }
+    }
+  }
+
+  if (controller.signal.aborted) return;
+
+  // Phase 3: fetch and add discovered blocks via RPC
+  const sorted = [...hits].sort((a, b) => b - a);
+  console.log('Scanner: adding', sorted.length, 'blocks with ledger txs:', sorted);
+  for (const height of sorted) {
+    if (controller.signal.aborted) break;
+    if (blockList.find(b => b.number === height)) {
+      // Already in graph — just mark it
+      const bd = blockList.find(b => b.number === height);
+      bd.hasLedgerTxs = true;
+      continue;
+    }
+    try {
+      const hash = await rpcCall('chain_getBlockHash', [height]);
+      const block = await rpcCall('chain_getBlock', [hash]);
+      addBlock(height, hash, block.block.extrinsics, block.block.header.digest.logs);
+      // Mark as having ledger txs
+      const bd = blockList.find(b => b.number === height);
+      if (bd) bd.hasLedgerTxs = true;
+    } catch (e) {
+      console.warn('Scanner: failed to fetch block', height, e);
+    }
+  }
+  console.log('Scanner: complete');
+  applyFilters();
+}
+
+// ═══════════════════════════════════════════
 // RPC CONNECTION
 // ═══════════════════════════════════════════
 
@@ -1194,6 +1360,12 @@ function connectRpc() {
       await rpcCall('chain_subscribeFinalizedHeads');
 
       subtitle.textContent = chainName + ' // waiting for blocks...';
+
+      // Start backward scan for historical blocks with ledger transactions
+      rpcCall('chain_getHeader').then(header => {
+        const headNumber = parseInt(header.number, 16);
+        scanBackward(headNumber).catch(e => console.warn('Scanner error:', e));
+      });
     } catch (e) {
       console.error('Setup error:', e);
       subtitle.textContent = 'Error: ' + e.message;
@@ -1237,6 +1409,7 @@ function connectRpc() {
     subtitle.textContent = 'Connection error, retrying...';
   };
   ws.onclose = () => {
+    if (scannerAbort) scannerAbort.abort();
     setTimeout(connectRpc, 5000);
   };
 }

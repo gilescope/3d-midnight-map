@@ -1260,19 +1260,42 @@ function highlightNode(nodeId) {
   }
 }
 
+let pointerDownPos = null;
+window.addEventListener('pointerdown', (e) => { pointerDownPos = { x: e.clientX, y: e.clientY }; });
 window.addEventListener('pointermove', (e) => {
   pointer.x = (e.clientX / innerWidth) * 2 - 1;
   pointer.y = -(e.clientY / innerHeight) * 2 + 1;
 });
 
-window.addEventListener('click', () => {
-  if (hoveredNode) {
-    if (selectedNode === hoveredNode) {
+const _proj = new THREE.Vector3();
+function findNearestNode(screenX, screenY, maxDist) {
+  let best = null, bestD = maxDist * maxDist;
+  for (const n of nodeMap.values()) {
+    if (!n.mesh.visible) continue;
+    _proj.copy(n.mesh.position).project(camera);
+    if (_proj.z > 1) continue; // behind camera
+    const sx = (_proj.x * 0.5 + 0.5) * innerWidth;
+    const sy = (-_proj.y * 0.5 + 0.5) * innerHeight;
+    const d = (sx - screenX) ** 2 + (sy - screenY) ** 2;
+    if (d < bestD) { bestD = d; best = n.id; }
+  }
+  return best;
+}
+
+window.addEventListener('click', (e) => {
+  if (pointerDownPos) {
+    const dx = e.clientX - pointerDownPos.x, dy = e.clientY - pointerDownPos.y;
+    if (dx * dx + dy * dy > 25) return; // was a drag, not a click
+  }
+  const target = hoveredNode || findNearestNode(e.clientX, e.clientY, 80);
+  if (target) {
+    if (selectedNode === target) {
       selectedNode = null;
       hideInfo();
     } else {
-      selectedNode = hoveredNode;
-      showInfo(hoveredNode);
+      selectedNode = target;
+      highlightNode(target);
+      showInfo(target);
     }
   } else {
     selectedNode = null;

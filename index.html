@@ -1050,6 +1050,38 @@ controller0.addEventListener('selectend', () => { vrSelectNode(pinchState.active
 controller1.addEventListener('selectend', () => { vrSelectNode(pinchState.active); });
 
 // ═══════════════════════════════════════════
+// KEYBOARD NAVIGATION (WASD / Arrow keys)
+// ═══════════════════════════════════════════
+
+const keysDown = new Set();
+window.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT') return;
+  keysDown.add(e.key);
+});
+window.addEventListener('keyup', (e) => keysDown.delete(e.key));
+
+function applyKeyboardMovement(dt) {
+  const speed = 20 * dt;
+  const forward = new THREE.Vector3();
+  camera.getWorldDirection(forward);
+  forward.y = 0;
+  forward.normalize();
+  const right = new THREE.Vector3().crossVectors(forward, camera.up).normalize();
+
+  const move = new THREE.Vector3();
+  if (keysDown.has('w') || keysDown.has('W') || keysDown.has('ArrowUp')) move.add(forward);
+  if (keysDown.has('s') || keysDown.has('S') || keysDown.has('ArrowDown')) move.sub(forward);
+  if (keysDown.has('a') || keysDown.has('A') || keysDown.has('ArrowLeft')) move.sub(right);
+  if (keysDown.has('d') || keysDown.has('D') || keysDown.has('ArrowRight')) move.add(right);
+  if (keysDown.has('q') || keysDown.has('Q')) move.y += 1;
+  if (keysDown.has('e') || keysDown.has('E')) move.y -= 1;
+  if (move.lengthSq() === 0) return;
+  move.normalize().multiplyScalar(speed);
+  camera.position.add(move);
+  controls.target.add(move);
+}
+
+// ═══════════════════════════════════════════
 // LEGEND FILTERS
 // ═══════════════════════════════════════════
 
@@ -1178,6 +1210,7 @@ function animate() {
       if (!selectedNode) highlightNode(null);
       document.body.style.cursor = 'default';
     }
+    applyKeyboardMovement(1 / 60);
     controls.update();
     if (composer) composer.render(); else renderer.render(scene, camera);
   } else {

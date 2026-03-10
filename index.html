@@ -358,22 +358,33 @@ function decodeEventFields(hex, fieldTypes) {
   return fields;
 }
 
-function formatEventFields(obj, indent) {
-  const pad = '  '.repeat(indent || 0);
-  const lines = [];
-  for (const [k, v] of Object.entries(obj)) {
-    if (v && typeof v === 'object' && !Array.isArray(v)) {
-      lines.push(pad + k + ':');
-      lines.push(formatEventFields(v, (indent || 0) + 1));
-    } else if (Array.isArray(v)) {
-      lines.push(pad + k + ': [' + v.join(', ').slice(0, 60) + (v.join(', ').length > 60 ? '...' : '') + ']');
-    } else {
-      let s = String(v);
-      if (s.startsWith('0x') && s.length > 20) s = s.slice(0, 10) + '..' + s.slice(-8);
-      lines.push(pad + k + ': ' + s);
-    }
+function formatVal(v, indent) {
+  const pad = '  '.repeat(indent);
+  if (v === null || v === undefined) return 'null';
+  if (Array.isArray(v)) {
+    if (v.length === 0) return '[]';
+    const items = v.map((item, i) => {
+      if (item && typeof item === 'object') return pad + '  [' + i + ']:\n' + formatVal(item, indent + 2);
+      return pad + '  ' + formatVal(item, 0);
+    });
+    return '(' + v.length + ')\n' + items.join('\n');
   }
-  return lines.join('\n');
+  if (v && typeof v === 'object') {
+    const lines = [];
+    for (const [k, val] of Object.entries(v)) {
+      const sub = formatVal(val, indent + 1);
+      if (sub.includes('\n')) lines.push(pad + k + ': ' + sub);
+      else lines.push(pad + k + ': ' + sub);
+    }
+    return lines.join('\n');
+  }
+  let s = String(v);
+  if (s.startsWith('0x') && s.length > 22) s = s.slice(0, 10) + '..' + s.slice(-8);
+  return s;
+}
+
+function formatEventFields(obj) {
+  return formatVal(obj, 0);
 }
 
 // Decode System.Events storage → [{phase, extIndex, pallet, event, name}]

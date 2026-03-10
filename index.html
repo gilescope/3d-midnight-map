@@ -88,6 +88,17 @@
 </div>
 <div id="scanlines"></div>
 <div id="vignette"></div>
+<svg id="connector-svg" style="position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:15;">
+  <defs>
+    <linearGradient id="cyber-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#00fff2" stop-opacity="0.8"/>
+      <stop offset="50%" stop-color="#ff00ff" stop-opacity="0.6"/>
+      <stop offset="100%" stop-color="#00fff2" stop-opacity="0.3"/>
+    </linearGradient>
+  </defs>
+  <line id="connector-line" stroke="url(#cyber-grad)" stroke-width="1.5" stroke-dasharray="6 4" display="none"/>
+  <circle id="connector-dot" r="3" fill="#00fff2" display="none"/>
+</svg>
 
 <script type="importmap">
 {
@@ -1177,6 +1188,35 @@ function showInfo(nodeId) {
 function hideInfo() {
   infoPanel.style.display = 'none';
   vrInfoText.visible = false;
+  connectorLine.setAttribute('display', 'none');
+  connectorDot.setAttribute('display', 'none');
+}
+
+const connectorLine = document.getElementById('connector-line');
+const connectorDot = document.getElementById('connector-dot');
+const _projVec = new THREE.Vector3();
+
+function updateConnector() {
+  if (!selectedNode || infoPanel.style.display === 'none' || renderer.xr.isPresenting) {
+    connectorLine.setAttribute('display', 'none');
+    connectorDot.setAttribute('display', 'none');
+    return;
+  }
+  const n = nodeMap.get(selectedNode);
+  if (!n) return;
+  _projVec.copy(n.mesh.position);
+  _projVec.project(camera);
+  const nx = (_projVec.x * 0.5 + 0.5) * innerWidth;
+  const ny = (-_projVec.y * 0.5 + 0.5) * innerHeight;
+  if (_projVec.z > 1) { connectorLine.setAttribute('display', 'none'); connectorDot.setAttribute('display', 'none'); return; }
+  const panelRect = infoPanel.getBoundingClientRect();
+  const px = panelRect.left;
+  const py = panelRect.top + panelRect.height * 0.5;
+  connectorLine.setAttribute('x1', nx); connectorLine.setAttribute('y1', ny);
+  connectorLine.setAttribute('x2', px); connectorLine.setAttribute('y2', py);
+  connectorLine.setAttribute('display', '');
+  connectorDot.setAttribute('cx', nx); connectorDot.setAttribute('cy', ny);
+  connectorDot.setAttribute('display', '');
 }
 
 function highlightNode(nodeId) {
@@ -1203,7 +1243,7 @@ function highlightNode(nodeId) {
     const n = nodeMap.get(nodeId);
     n.mesh.material.emissiveIntensity = 3.0;
     n.glow.material.opacity = 1.0;
-    showInfo(nodeId);
+    if (!selectedNode) showInfo(nodeId);
   } else if (!selectedNode) {
     hideInfo();
   }
@@ -1216,8 +1256,13 @@ window.addEventListener('pointermove', (e) => {
 
 window.addEventListener('click', () => {
   if (hoveredNode) {
-    selectedNode = selectedNode === hoveredNode ? null : hoveredNode;
-    if (!selectedNode) hideInfo();
+    if (selectedNode === hoveredNode) {
+      selectedNode = null;
+      hideInfo();
+    } else {
+      selectedNode = hoveredNode;
+      showInfo(hoveredNode);
+    }
   } else {
     selectedNode = null;
     hideInfo();
@@ -1420,6 +1465,7 @@ function animate() {
     applyKeyboardMovement(1 / 60);
     controls.update();
     if (composer) composer.render(); else renderer.render(scene, camera);
+    updateConnector();
   } else {
     const session = renderer.xr.getSession();
     const sources = session ? session.inputSources : [];

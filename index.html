@@ -146,8 +146,14 @@ const HEX = {
   cardano: '#4488ff', event: '#66ffcc',
 };
 
-const RPC_URL = 'wss://rpc.preview.midnight.network';
-const INDEXER_URL = 'https://indexer.preview.midnight.network/api/v3/graphql';
+const NETWORKS = [
+  { name: 'preview', rpc: 'wss://rpc.preview.midnight.network', indexer: 'https://indexer.preview.midnight.network/api/v3/graphql' },
+  { name: 'qanet',   rpc: 'wss://rpc.qanet.midnight.network',   indexer: 'https://indexer.qanet.midnight.network/api/v3/graphql' },
+  { name: 'devnet',  rpc: 'wss://rpc.devnet.midnight.network',  indexer: 'https://indexer.devnet.midnight.network/api/v3/graphql' },
+];
+let currentNetwork = NETWORKS[0];
+let RPC_URL = currentNetwork.rpc;
+let INDEXER_URL = currentNetwork.indexer;
 const MAX_BLOCKS = 12;
 const BLOCK_SPACING = 6;
 const ORBITRON_URL = 'https://fonts.gstatic.com/s/orbitron/v31/yMJRMIlzdpvBhQQL_Qq7dy0.woff2';
@@ -158,6 +164,7 @@ let rpcId = 0;
 const rpcCallbacks = new Map();
 let chainName = '';
 let lastFinalizedNumber = 0;
+let scannerAbort = null;
 let palletInfo = null;
 let maxBlockBytes = 3932160; // default: 75% of 5MB
 
@@ -332,14 +339,11 @@ function readScaleType(r, tid, depth) {
       if (t.p === 0) return r.u8() !== 0; // bool
       if (t.p === 1) return r.u32(); // char
       if (t.p === 2) return r.str(); // str
-      if (t.p === 3) return r.u8(); // u8
-      if (t.p === 4) return r.u16(); // u16
-      if (t.p === 5) return r.u32(); // u32
-      if (t.p >= 6 && t.p <= 8) return r.bigU(PRIM_SIZES[t.p]).toString(); // u64/u128/u256
-      if (t.p === 9) return r.u8(); // i8
-      if (t.p === 10) return r.u16(); // i16
-      if (t.p === 11) return r.u32(); // i32
-      if (t.p >= 12) return r.bigU(PRIM_SIZES[t.p]).toString(); // i64/i128/i256
+      if (t.p === 3 || t.p === 9) return r.u8(); // u8/i8
+      if (t.p === 4 || t.p === 10) return r.u16(); // u16/i16
+      if (t.p === 5 || t.p === 11) return r.u32(); // u32/i32
+      const sz = PRIM_SIZES[t.p];
+      if (sz > 0) return r.bigU(sz).toString(); // u64+/i64+
       return '?';
     }
     case 'co': return r.compact();
@@ -370,21 +374,13 @@ function formatVal(v, indent) {
     return '(' + v.length + ')\n' + items.join('\n');
   }
   if (v && typeof v === 'object') {
-    const lines = [];
-    for (const [k, val] of Object.entries(v)) {
-      const sub = formatVal(val, indent + 1);
-      if (sub.includes('\n')) lines.push(pad + k + ': ' + sub);
-      else lines.push(pad + k + ': ' + sub);
-    }
-    return lines.join('\n');
+    return Object.entries(v).map(([k, val]) =>
+      pad + k + ': ' + formatVal(val, indent + 1)
+    ).join('\n');
   }
   let s = String(v);
   if (s.startsWith('0x') && s.length > 22) s = s.slice(0, 10) + '..' + s.slice(-8);
   return s;
-}
-
-function formatEventFields(obj) {
-  return formatVal(obj, 0);
 }
 
 // Decode System.Events storage → [{phase, extIndex, pallet, event, name}]
@@ -1050,6 +1046,206 @@ const stars2 = new THREE.Points(makeStars(800, 90),
 scene.add(stars1, stars2);
 
 // ═══════════════════════════════════════════
+// NETWORK STARS — deterministic position from name hash
+// ═══════════════════════════════════════════
+
+function hashStr(s) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x01000193);
+  return h >>> 0;
+}
+
+function networkColor(name) {
+  const h = hashStr(name);
+  return new THREE.Color().setHSL((h & 0xffff) / 0xffff, 0.8, 0.6);
+}
+
+function networkPosition(name, radius) {
+  const h1 = hashStr(name), h2 = hashStr(name + '_phi');
+  const theta = ((h1 & 0xffff) / 0xffff) * Math.PI * 2;
+  const phi = Math.acos(2 * ((h2 & 0xffff) / 0xffff) - 1);
+  return new THREE.Vector3(
+    radius * Math.sin(phi) * Math.cos(theta),
+    radius * Math.sin(phi) * Math.sin(theta),
+    radius * Math.cos(phi)
+  );
+}
+
+const networkStars = [];
+const STAR_RADIUS = 60;
+for (const net of NETWORKS) {
+  const pos = networkPosition(net.name, STAR_RADIUS);
+  const color = networkColor(net.name);
+  const isCurrent = net === currentNetwork;
+
+  // Core sphere
+  const geo = new THREE.IcosahedronGeometry(isCurrent ? 2.0 : 1.2, 2);
+  const mat = new THREE.MeshStandardMaterial({
+    color, emissive: color, emissiveIntensity: isCurrent ? 3.0 : 1.5,
+    metalness: 0.3, roughness: 0.2, transparent: true, opacity: 0.95,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.copy(pos);
+  scene.add(mesh);
+
+  // Glow sprite
+  const glowMat = new THREE.SpriteMaterial({
+    map: glowTex, color,
+    transparent: true, opacity: isCurrent ? 0.9 : 0.5,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  const glow = new THREE.Sprite(glowMat);
+  glow.scale.setScalar(isCurrent ? 12 : 7);
+  mesh.add(glow);
+
+  // Label
+  const label = new Text();
+  label.text = net.name;
+  label.fontSize = 0.8;
+  label.color = '#' + color.getHexString();
+  label.anchorX = 'center';
+  label.anchorY = 'bottom';
+  label.position.y = 2.0;
+  label.outlineWidth = '10%';
+  label.outlineColor = 0x000000;
+  label.outlineOpacity = 0.8;
+  label.font = ORBITRON_URL;
+  label.sync();
+  mesh.add(label);
+  labelEntries.push({ label, mesh });
+
+  mesh.userData = { networkName: net.name, network: net };
+  networkStars.push({ net, mesh, glow, label, color, pos });
+}
+
+// ═══════════════════════════════════════════
+// HYPERSPACE TRANSITION
+// ═══════════════════════════════════════════
+
+let hyperspaceActive = false;
+const hyperLines = [];
+
+function clearAllState() {
+  // Abort scanner
+  if (scannerAbort) { scannerAbort.abort(); scannerAbort = null; }
+  // Close websocket without auto-reconnect
+  if (ws) { ws.onclose = null; ws.close(); ws = null; }
+  // Clear RPC callbacks
+  for (const cb of rpcCallbacks.values()) clearTimeout(cb.timer);
+  rpcCallbacks.clear();
+  rpcId = 0;
+  // Remove all graph nodes
+  const ids = [...nodeMap.keys()];
+  for (const id of ids) removeNode(id);
+  blockList.length = 0;
+  cardanoBlockList.length = 0;
+  edges.length = 0;
+  edgeData.length = 0;
+  // Reset state
+  selectedNode = null;
+  hoveredNode = null;
+  lastFinalizedNumber = 0;
+  chainName = '';
+  palletInfo = null;
+  typesRegistry = {};
+  forceSettleSteps = 0;
+  hideInfo();
+  rebuildAllEdges();
+}
+
+function createHyperLines(targetPos) {
+  const group = new THREE.Group();
+  scene.add(group);
+  const dir = targetPos.clone().normalize();
+  for (let i = 0; i < 120; i++) {
+    const offset = new THREE.Vector3(
+      (Math.random() - 0.5) * 30,
+      (Math.random() - 0.5) * 30,
+      (Math.random() - 0.5) * 30
+    );
+    const start = dir.clone().multiplyScalar(5).add(offset);
+    const end = dir.clone().multiplyScalar(60 + Math.random() * 30).add(offset);
+    const geo = new THREE.BufferGeometry().setFromPoints([start, end]);
+    const hue = 0.5 + Math.random() * 0.2;
+    const col = new THREE.Color().setHSL(hue, 1.0, 0.7);
+    const line = new THREE.Line(geo, new THREE.LineBasicMaterial({
+      color: col, transparent: true, opacity: 0,
+    }));
+    group.add(line);
+    hyperLines.push({ line, delay: Math.random() * 0.3 });
+  }
+  return group;
+}
+
+function hyperspaceTo(network) {
+  if (hyperspaceActive || network === currentNetwork) return;
+  hyperspaceActive = true;
+
+  const star = networkStars.find(s => s.net === network);
+  const targetPos = star ? star.pos.clone() : new THREE.Vector3(0, 0, -60);
+  const hyperGroup = createHyperLines(targetPos);
+
+  // Update network star appearances
+  const oldStar = networkStars.find(s => s.net === currentNetwork);
+  if (oldStar) {
+    oldStar.mesh.material.emissiveIntensity = 1.5;
+    oldStar.glow.material.opacity = 0.5;
+    oldStar.mesh.geometry.dispose();
+    oldStar.mesh.geometry = new THREE.IcosahedronGeometry(1.2, 2);
+    oldStar.glow.scale.setScalar(7);
+  }
+
+  let elapsed = 0;
+  const duration = 1.5;
+  const tick = () => {
+    elapsed += 1 / 60;
+    const t = Math.min(elapsed / duration, 1);
+
+    // Animate hyperspace lines
+    for (const hl of hyperLines) {
+      const lt = Math.max(0, Math.min(1, (t - hl.delay) / 0.5));
+      hl.line.material.opacity = lt < 0.8 ? lt : Math.max(0, 1 - (lt - 0.8) / 0.2);
+    }
+
+    // Screen flash at midpoint
+    if (t > 0.4 && t < 0.6) {
+      renderer.setClearColor(0xffffff, (0.6 - Math.abs(t - 0.5)) * 3);
+    } else {
+      renderer.setClearColor(0x050510, 1);
+    }
+
+    if (t >= 1) {
+      // Cleanup hyperspace lines
+      scene.remove(hyperGroup);
+      for (const hl of hyperLines) { hl.line.geometry.dispose(); hl.line.material.dispose(); }
+      hyperLines.length = 0;
+      renderer.setClearColor(0x050510, 1);
+
+      // Switch network
+      currentNetwork = network;
+      RPC_URL = network.rpc;
+      INDEXER_URL = network.indexer;
+      clearAllState();
+
+      // Highlight new star
+      if (star) {
+        star.mesh.material.emissiveIntensity = 3.0;
+        star.glow.material.opacity = 0.9;
+        star.mesh.geometry.dispose();
+        star.mesh.geometry = new THREE.IcosahedronGeometry(2.0, 2);
+        star.glow.scale.setScalar(12);
+      }
+
+      connectRpc();
+      hyperspaceActive = false;
+      return;
+    }
+    requestAnimationFrame(tick);
+  };
+  tick();
+}
+
+// ═══════════════════════════════════════════
 // FORCE LAYOUT
 // ═══════════════════════════════════════════
 
@@ -1166,7 +1362,7 @@ function showInfo(nodeId) {
     if (n.fieldHex && n.fieldTypes && n.fieldTypes.length > 0) {
       try {
         const fields = decodeEventFields(n.fieldHex, n.fieldTypes);
-        desc = formatEventFields(fields);
+        desc = formatVal(fields, 0);
       } catch (e) {
         desc = 'Event emitted by extrinsic\n(decode error: ' + e.message + ')';
       }
@@ -1196,35 +1392,32 @@ function showInfo(nodeId) {
   }
 }
 
-function hideInfo() {
-  infoPanel.style.display = 'none';
-  vrInfoText.visible = false;
+const connectorLine = document.getElementById('connector-line');
+const connectorDot = document.getElementById('connector-dot');
+const _proj = new THREE.Vector3();
+
+function hideConnector() {
   connectorLine.setAttribute('display', 'none');
   connectorDot.setAttribute('display', 'none');
 }
 
-const connectorLine = document.getElementById('connector-line');
-const connectorDot = document.getElementById('connector-dot');
-const _projVec = new THREE.Vector3();
+function hideInfo() {
+  infoPanel.style.display = 'none';
+  vrInfoText.visible = false;
+  hideConnector();
+}
 
 function updateConnector() {
-  if (!selectedNode || infoPanel.style.display === 'none' || renderer.xr.isPresenting) {
-    connectorLine.setAttribute('display', 'none');
-    connectorDot.setAttribute('display', 'none');
-    return;
-  }
+  if (!selectedNode || infoPanel.style.display === 'none' || renderer.xr.isPresenting) { hideConnector(); return; }
   const n = nodeMap.get(selectedNode);
   if (!n) return;
-  _projVec.copy(n.mesh.position);
-  _projVec.project(camera);
-  const nx = (_projVec.x * 0.5 + 0.5) * innerWidth;
-  const ny = (-_projVec.y * 0.5 + 0.5) * innerHeight;
-  if (_projVec.z > 1) { connectorLine.setAttribute('display', 'none'); connectorDot.setAttribute('display', 'none'); return; }
+  _proj.copy(n.mesh.position).project(camera);
+  if (_proj.z > 1) { hideConnector(); return; }
+  const nx = (_proj.x * 0.5 + 0.5) * innerWidth;
+  const ny = (-_proj.y * 0.5 + 0.5) * innerHeight;
   const panelRect = infoPanel.getBoundingClientRect();
-  const px = panelRect.left;
-  const py = panelRect.top + panelRect.height * 0.5;
   connectorLine.setAttribute('x1', nx); connectorLine.setAttribute('y1', ny);
-  connectorLine.setAttribute('x2', px); connectorLine.setAttribute('y2', py);
+  connectorLine.setAttribute('x2', panelRect.left); connectorLine.setAttribute('y2', panelRect.top + panelRect.height * 0.5);
   connectorLine.setAttribute('display', '');
   connectorDot.setAttribute('cx', nx); connectorDot.setAttribute('cy', ny);
   connectorDot.setAttribute('display', '');
@@ -1267,7 +1460,6 @@ window.addEventListener('pointermove', (e) => {
   pointer.y = -(e.clientY / innerHeight) * 2 + 1;
 });
 
-const _proj = new THREE.Vector3();
 function findNearestNode(screenX, screenY, maxDist) {
   let best = null, bestD = maxDist * maxDist;
   for (const n of nodeMap.values()) {
@@ -1304,6 +1496,15 @@ window.addEventListener('click', (e) => {
 });
 
 window.addEventListener('dblclick', () => {
+  // Check network stars first
+  raycaster.setFromCamera(pointer, camera);
+  const starMeshes = networkStars.map(s => s.mesh);
+  const starHits = raycaster.intersectObjects(starMeshes, false);
+  if (starHits.length > 0) {
+    const net = starHits[0].object.userData.network;
+    if (net) { hyperspaceTo(net); return; }
+  }
+
   if (!hoveredNode) return;
   const n = nodeMap.get(hoveredNode);
   if (!n) return;
@@ -1348,25 +1549,28 @@ window.addEventListener('keydown', (e) => {
 });
 window.addEventListener('keyup', (e) => keysDown.delete(e.key));
 
+const _forward = new THREE.Vector3();
+const _right = new THREE.Vector3();
+const _move = new THREE.Vector3();
+
 function applyKeyboardMovement(dt) {
   const speed = (keysDown.has('Shift') ? 200 : 20) * dt;
-  const forward = new THREE.Vector3();
-  camera.getWorldDirection(forward);
-  forward.y = 0;
-  forward.normalize();
-  const right = new THREE.Vector3().crossVectors(forward, camera.up).normalize();
+  camera.getWorldDirection(_forward);
+  _forward.y = 0;
+  _forward.normalize();
+  _right.crossVectors(_forward, camera.up).normalize();
 
-  const move = new THREE.Vector3();
-  if (keysDown.has('w') || keysDown.has('W') || keysDown.has('ArrowUp')) move.add(forward);
-  if (keysDown.has('s') || keysDown.has('S') || keysDown.has('ArrowDown')) move.sub(forward);
-  if (keysDown.has('a') || keysDown.has('A') || keysDown.has('ArrowLeft')) move.sub(right);
-  if (keysDown.has('d') || keysDown.has('D') || keysDown.has('ArrowRight')) move.add(right);
-  if (keysDown.has('q') || keysDown.has('Q')) move.y += 1;
-  if (keysDown.has('e') || keysDown.has('E')) move.y -= 1;
-  if (move.lengthSq() === 0) return;
-  move.normalize().multiplyScalar(speed);
-  camera.position.add(move);
-  controls.target.add(move);
+  _move.set(0, 0, 0);
+  if (keysDown.has('w') || keysDown.has('W') || keysDown.has('ArrowUp')) _move.add(_forward);
+  if (keysDown.has('s') || keysDown.has('S') || keysDown.has('ArrowDown')) _move.sub(_forward);
+  if (keysDown.has('a') || keysDown.has('A') || keysDown.has('ArrowLeft')) _move.sub(_right);
+  if (keysDown.has('d') || keysDown.has('D') || keysDown.has('ArrowRight')) _move.add(_right);
+  if (keysDown.has('q') || keysDown.has('Q')) _move.y += 1;
+  if (keysDown.has('e') || keysDown.has('E')) _move.y -= 1;
+  if (_move.lengthSq() === 0) return;
+  _move.normalize().multiplyScalar(speed);
+  camera.position.add(_move);
+  controls.target.add(_move);
 }
 
 // ═══════════════════════════════════════════
@@ -1436,6 +1640,10 @@ const clock = new THREE.Clock();
 const dummy = new THREE.Object3D();
 const _camQuat = new THREE.Quaternion();
 const _parentQuat = new THREE.Quaternion();
+const _a = new THREE.Vector3();
+const _b = new THREE.Vector3();
+const _tempMatrix = new THREE.Matrix4();
+const _rayDir = new THREE.Vector3(Math.sin(RAY_PITCH), 0, -Math.cos(RAY_PITCH));
 
 function animate() {
   const t = clock.getElapsedTime();
@@ -1469,7 +1677,6 @@ function animate() {
   }
 
   let idx = 0;
-  const _a = new THREE.Vector3(), _b = new THREE.Vector3();
   for (const e of edgeData) {
     _a.copy(e.src.mesh.position);
     _b.copy(e.tgt.mesh.position);
@@ -1485,7 +1692,14 @@ function animate() {
   }
   particles.instanceMatrix.needsUpdate = true;
 
-  // Stars static — rotating background causes perceived drift without grid anchor
+  // Pulse network stars
+  for (const ns of networkStars) {
+    const isCurrent = ns.net === currentNetwork;
+    const pulse = 0.15 * Math.sin(t * (isCurrent ? 1.5 : 0.8) + hashStr(ns.net.name));
+    ns.glow.material.opacity = (isCurrent ? 0.9 : 0.5) + pulse;
+    ns.mesh.rotation.y = t * 0.2;
+  }
+
   if (!renderer.xr.isPresenting) {
     raycaster.setFromCamera(pointer, camera);
     const hits = raycaster.intersectObjects(nodeMeshes, false);
@@ -1526,21 +1740,18 @@ function animate() {
         const scale = Math.min(Math.max(pinchState.startScale * (curDist / pinchState.startDist), 0.2), 5);
         graphGroup.scale.setScalar(scale);
         _midPos.lerpVectors(_c0Pos, _c1Pos, 0.5);
-        graphGroup.position.copy(pinchState.startGroupPos).add(
-          _midPos.clone().sub(pinchState.startMid)
-        );
+        _a.copy(_midPos).sub(pinchState.startMid);
+        graphGroup.position.copy(pinchState.startGroupPos).add(_a);
       }
     } else {
       pinchState.active = false;
     }
 
-    const tempMatrix = new THREE.Matrix4();
-    const rayDir = new THREE.Vector3(Math.sin(RAY_PITCH), 0, -Math.cos(RAY_PITCH));
     let bestHit = null;
     for (const ctrl of [controller0, controller1]) {
-      tempMatrix.identity().extractRotation(ctrl.matrixWorld);
+      _tempMatrix.identity().extractRotation(ctrl.matrixWorld);
       raycaster.ray.origin.setFromMatrixPosition(ctrl.matrixWorld);
-      raycaster.ray.direction.copy(rayDir).applyMatrix4(tempMatrix);
+      raycaster.ray.direction.copy(_rayDir).applyMatrix4(_tempMatrix);
       const hits = raycaster.intersectObjects(nodeMeshes, false);
       if (hits.length > 0 && (!bestHit || hits[0].distance < bestHit.distance)) {
         bestHit = hits[0];
@@ -1569,8 +1780,6 @@ renderer.setAnimationLoop(animate);
 // ═══════════════════════════════════════════
 // BACKWARD SCANNER — find historical blocks with ledger txs
 // ═══════════════════════════════════════════
-
-let scannerAbort = null;
 
 // Batch-check up to 50 blocks in a single GraphQL request using aliases
 async function batchCheckBlocks(heights) {
@@ -1624,9 +1833,9 @@ async function scanBackward(startHeight) {
     // Fetch and add discovered blocks immediately (progressive display)
     for (const height of roundHits) {
       if (controller.signal.aborted) break;
-      if (blockList.find(b => b.number === height)) {
-        const bd = blockList.find(b => b.number === height);
-        bd.hasLedgerTxs = true;
+      const existing = blockList.find(b => b.number === height);
+      if (existing) {
+        existing.hasLedgerTxs = true;
         continue;
       }
       try {

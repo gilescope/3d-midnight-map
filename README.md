@@ -19,9 +19,10 @@ A real-time 3D block explorer for the Midnight preview network, built with Three
 ### Interaction
 
 - Double-click a block to open it in Polkadot.js Apps or CardanoScan
+- Double-click a network star to hyperspace to that blockchain (preview, qanet, devnet)
 - Hover over any node for detailed info panel (block stats, extrinsic size, event fields)
 - Event hover decodes full SCALE-encoded field data (e.g. UnshieldedTokens amounts, addresses)
-- WASD / arrow keys for camera movement, Q/E for vertical, Shift to run (3x speed)
+- WASD / arrow keys for camera movement, Q/E for vertical, Shift to run (10x speed)
 - Legend checkboxes to filter: Unfinalized, Finalized, Extrinsics, Events, Cardano, Empty Blocks
 
 ### Data Sources
@@ -43,7 +44,8 @@ A real-time 3D block explorer for the Midnight preview network, built with Three
 
 - Cyberpunk aesthetic: bloom, scanlines, particle edges, Orbitron font
 - Neon colour scheme: cyan, gold, magenta, green, blue on dark background
-- Starfield background
+- Starfield background with glowing network stars at deterministic positions (FNV-1a hash)
+- Hyperspace jump animation with streak lines and flash transition
 
 ## How It Works
 

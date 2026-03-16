@@ -1142,6 +1142,7 @@ function clearAllState() {
   }
   edgeData.length = 0;
   edges.length = 0;
+  particles.count = 0;
   // Remove all graph nodes
   const ids = [...nodeMap.keys()];
   for (const id of ids) removeNode(id);
@@ -1185,6 +1186,10 @@ function createHyperLines(targetPos) {
 function hyperspaceTo(network) {
   if (hyperspaceActive || network === currentNetwork) return;
   hyperspaceActive = true;
+
+  // Kill old connection immediately so no new blocks arrive during animation
+  if (scannerAbort) { scannerAbort.abort(); scannerAbort = null; }
+  if (ws) { ws.onclose = null; ws.close(); ws = null; }
 
   const star = networkStars.find(s => s.net === network);
   const targetPos = star ? star.pos.clone() : new THREE.Vector3(0, 0, -60);

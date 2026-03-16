@@ -1134,13 +1134,19 @@ function clearAllState() {
   for (const cb of rpcCallbacks.values()) clearTimeout(cb.timer);
   rpcCallbacks.clear();
   rpcId = 0;
+  // Remove all edge line objects first (before edgeData is emptied)
+  for (const e of edgeData) {
+    edgeGroup.remove(e.line);
+    e.geo.dispose();
+    e.line.material.dispose();
+  }
+  edgeData.length = 0;
+  edges.length = 0;
   // Remove all graph nodes
   const ids = [...nodeMap.keys()];
   for (const id of ids) removeNode(id);
   blockList.length = 0;
   cardanoBlockList.length = 0;
-  edges.length = 0;
-  edgeData.length = 0;
   // Reset state
   selectedNode = null;
   hoveredNode = null;
@@ -1150,7 +1156,6 @@ function clearAllState() {
   typesRegistry = {};
   forceSettleSteps = 0;
   hideInfo();
-  rebuildAllEdges();
 }
 
 function createHyperLines(targetPos) {

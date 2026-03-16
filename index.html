@@ -1194,9 +1194,8 @@ function hyperspaceTo(network) {
   if (hyperspaceActive || network === currentNetwork) return;
   hyperspaceActive = true;
 
-  // Kill old connection immediately so no new blocks arrive during animation
-  if (scannerAbort) { scannerAbort.abort(); scannerAbort = null; }
-  if (ws) { ws.onclose = null; ws.close(); ws = null; }
+  // Clear graph immediately so old chain disappears before animation
+  clearAllState();
 
   const star = networkStars.find(s => s.net === network);
   const targetPos = star ? star.pos.clone() : new THREE.Vector3(0, 0, -60);
@@ -1238,11 +1237,10 @@ function hyperspaceTo(network) {
       hyperLines.length = 0;
       renderer.setClearColor(0x050510, 1);
 
-      // Switch network
+      // Switch network and connect
       currentNetwork = network;
       RPC_URL = network.rpc;
       INDEXER_URL = network.indexer;
-      clearAllState();
 
       // Highlight new star
       if (star) {
@@ -1513,15 +1511,18 @@ window.addEventListener('click', (e) => {
   }
 });
 
-window.addEventListener('dblclick', () => {
-  // Check network stars first
-  raycaster.setFromCamera(pointer, camera);
-  const starMeshes = networkStars.map(s => s.mesh);
-  const starHits = raycaster.intersectObjects(starMeshes, false);
-  if (starHits.length > 0) {
-    const net = starHits[0].object.userData.network;
-    if (net) { hyperspaceTo(net); return; }
+window.addEventListener('dblclick', (e) => {
+  // Check network stars first (screen-space proximity)
+  let closestStar = null, closestD = 40 * 40;
+  for (const ns of networkStars) {
+    _proj.copy(ns.pos).project(camera);
+    if (_proj.z > 1) continue;
+    const sx = (_proj.x * 0.5 + 0.5) * innerWidth;
+    const sy = (-_proj.y * 0.5 + 0.5) * innerHeight;
+    const d = (sx - e.clientX) ** 2 + (sy - e.clientY) ** 2;
+    if (d < closestD) { closestD = d; closestStar = ns; }
   }
+  if (closestStar) { hyperspaceTo(closestStar.net); return; }
 
   if (!hoveredNode) return;
   const n = nodeMap.get(hoveredNode);
@@ -1720,16 +1721,25 @@ function animate() {
 
   if (!renderer.xr.isPresenting) {
     raycaster.setFromCamera(pointer, camera);
-    // Check network stars for tooltip
-    const starMeshes = networkStars.map(s => s.mesh);
-    const starHits = raycaster.intersectObjects(starMeshes, false);
-    if (starHits.length > 0) {
-      const netName = starHits[0].object.userData.networkName;
-      const isCurrent = starHits[0].object.userData.network === currentNetwork;
-      starTooltip.textContent = isCurrent ? netName + ' (current)' : 'Jump to ' + netName;
+    // Check network stars for tooltip (screen-space proximity)
+    const mx = (pointer.x * 0.5 + 0.5) * innerWidth;
+    const my = (-pointer.y * 0.5 + 0.5) * innerHeight;
+    let hoveredStar = null;
+    let bestStarDist = 40 * 40; // 40px radius
+    for (const ns of networkStars) {
+      _proj.copy(ns.pos).project(camera);
+      if (_proj.z > 1) continue;
+      const sx = (_proj.x * 0.5 + 0.5) * innerWidth;
+      const sy = (-_proj.y * 0.5 + 0.5) * innerHeight;
+      const d = (sx - mx) ** 2 + (sy - my) ** 2;
+      if (d < bestStarDist) { bestStarDist = d; hoveredStar = ns; }
+    }
+    if (hoveredStar) {
+      const isCurrent = hoveredStar.net === currentNetwork;
+      starTooltip.textContent = isCurrent ? hoveredStar.net.name + ' (current)' : 'Jump to ' + hoveredStar.net.name;
       starTooltip.style.display = 'block';
-      starTooltip.style.left = (pointer.x * 0.5 + 0.5) * innerWidth + 15 + 'px';
-      starTooltip.style.top = (-pointer.y * 0.5 + 0.5) * innerHeight + 'px';
+      starTooltip.style.left = mx + 15 + 'px';
+      starTooltip.style.top = my + 'px';
       document.body.style.cursor = 'pointer';
     } else {
       starTooltip.style.display = 'none';
@@ -1740,7 +1750,7 @@ function animate() {
       document.body.style.cursor = 'pointer';
     } else {
       if (!selectedNode) highlightNode(null);
-      if (starHits.length === 0) document.body.style.cursor = 'default';
+      if (!hoveredStar) document.body.style.cursor = 'default';
     }
     applyKeyboardMovement(1 / 60);
     controls.update();

@@ -568,7 +568,7 @@ const scene = new THREE.Scene();
 scene.fog = new THREE.Fog(0x050510, WORLD_RADIUS * 1.5, WORLD_RADIUS * 5);
 
 const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 2000);
-camera.position.set(0, 15, WORLD_RADIUS + 25);
+camera.position.set(0, 10, WORLD_RADIUS + 12);
 
 const renderer = new THREE.WebGLRenderer({ antialias: !isMobile, alpha: false });
 if (!renderer.getContext()) {
@@ -1323,7 +1323,7 @@ function hyperspaceTo(network) {
 // ═══════════════════════════════════════════
 
 let forceSettleSteps = 0;
-const repulsion = 15, attraction = 0.03, damping = 0.92, minDist = 0.5;
+const repulsion = 5, attraction = 0.02, damping = 0.8, minDist = 0.5;
 const _diff = new THREE.Vector3();
 
 function forceStep() {

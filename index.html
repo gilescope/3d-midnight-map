@@ -922,14 +922,14 @@ function addBlock(number, hash, extrinsics, digestLogs, hasLedgerTxs = false) {
     }
     if (bd.eventNodeIds.length > 0) {
       applyFilters();
-      forceSettleSteps = 100;
+      // trigger layout
     }
   }).catch(() => {});
 
   // Reposition all blocks along X axis
   repositionBlocks();
   applyFilters();
-  forceSettleSteps = 150;
+  // trigger layout
 }
 
 function repositionBlocks() {
@@ -949,9 +949,21 @@ function repositionBlocks() {
       const extEntry = nodeMap.get(bd.extNodeIds[j]);
       if (!extEntry) continue;
       extEntry.parentBlockId = bd.nodeId;
-      if (extEntry.pos.length() < 1) {
-        const angle = (j / bd.extNodeIds.length) * Math.PI * 2;
-        extEntry.pos.copy(tangentOffset(target, angle, 2.5, EXT_ALT));
+      const angle = (j / bd.extNodeIds.length) * Math.PI * 2;
+      const extTarget = tangentOffset(target, angle, 2.5, EXT_ALT);
+      extEntry.targetPos = extTarget;
+      if (extEntry.pos.length() < 1) extEntry.pos.copy(extTarget);
+    }
+    // Position events above their parent extrinsic
+    if (bd.eventNodeIds) {
+      for (const evId of bd.eventNodeIds) {
+        const evEntry = nodeMap.get(evId);
+        if (!evEntry || !evEntry.parentExtId) continue;
+        const parentExt = nodeMap.get(evEntry.parentExtId);
+        if (!parentExt?.targetPos) continue;
+        const evIdx = bd.eventNodeIds.indexOf(evId);
+        const evAngle = (evIdx / bd.eventNodeIds.length) * Math.PI * 2;
+        evEntry.targetPos = tangentOffset(parentExt.targetPos, evAngle, 1.2, EVENT_ALT);
       }
     }
   }
@@ -1224,7 +1236,7 @@ function clearAllState() {
   chainName = '';
   palletInfo = null;
   typesRegistry = {};
-  forceSettleSteps = 0;
+  // layout reset
   hideInfo();
 }
 
@@ -1326,62 +1338,13 @@ function hyperspaceTo(network) {
 // FORCE LAYOUT
 // ═══════════════════════════════════════════
 
-let forceSettleSteps = 0;
-const repulsion = 5, attraction = 0.02, damping = 0.8, minDist = 0.5;
 const _diff = new THREE.Vector3();
 
-function forceStep() {
-  const allNodes = [...nodeMap.values()].filter(n => n.mesh.visible);
-
-  // Repulsion between all nodes
-  for (let i = 0; i < allNodes.length; i++) {
-    for (let j = i + 1; j < allNodes.length; j++) {
-      const a = allNodes[i], b = allNodes[j];
-      _diff.subVectors(a.pos, b.pos);
-      const d = Math.max(_diff.length(), minDist);
-      const f = repulsion / (d * d);
-      _diff.normalize().multiplyScalar(f);
-      a.vel.add(_diff);
-      b.vel.sub(_diff);
-    }
-  }
-
-  // Attraction along edges
-  for (const [srcId, tgtId] of edges) {
-    const s = nodeMap.get(srcId), t = nodeMap.get(tgtId);
-    if (!s || !t || !s.mesh.visible || !t.mesh.visible) continue;
-    _diff.subVectors(t.pos, s.pos);
-    const d = _diff.length();
-    const crossChain = (s.type === 'block' && t.type === 'cardano') || (s.type === 'cardano' && t.type === 'block');
-    const chainLink = (s.type === 'block' && t.type === 'block') || (s.type === 'cardano' && t.type === 'cardano');
-    const rest = chainLink ? 4 : crossChain ? 3 : 2.5;
-    const f = attraction * (d - rest);
-    _diff.normalize().multiplyScalar(f);
-    s.vel.add(_diff);
-    t.vel.sub(_diff);
-  }
-
-  // Pull nodes toward their sphere-surface targets + gravity to surface
-  for (const n of allNodes) {
-    if (n.targetPos) {
-      _diff.subVectors(n.targetPos, n.pos).multiplyScalar(0.05);
-      n.vel.add(_diff);
-    }
-    // Gravity: pull toward correct altitude above sphere
-    const dist = n.pos.length();
-    const alt = n.type === 'event' ? EVENT_ALT : n.type === 'extrinsic' ? EXT_ALT :
-      n.type === 'cardano' ? CARDANO_ALT : BLOCK_ALT;
-    const targetR = WORLD_RADIUS + alt;
-    const radialForce = (targetR - dist) * 0.1;
-    const normal = n.pos.clone().normalize();
-    n.vel.addScaledVector(normal, radialForce);
-
-    n.vel.multiplyScalar(damping);
-    n.pos.add(n.vel);
-    // Hard constraint: never inside sphere
-    const newDist = n.pos.length();
-    const minR = WORLD_RADIUS + 0.2;
-    if (newDist < minR) n.pos.multiplyScalar(minR / newDist);
+// Simple layout: lerp nodes toward their target positions
+function layoutStep() {
+  for (const n of nodeMap.values()) {
+    if (!n.mesh.visible || !n.targetPos) continue;
+    n.pos.lerp(n.targetPos, 0.15);
   }
 }
 
@@ -1736,7 +1699,7 @@ function applyFilters() {
   repositionBlocks();
   repositionCardanoBlocks();
   rebuildAllEdges();
-  forceSettleSteps = 150;
+  // trigger layout
 }
 
 document.querySelectorAll('#legend input[data-filter]').forEach(cb => {
@@ -1762,10 +1725,7 @@ const _rayDir = new THREE.Vector3(Math.sin(RAY_PITCH), 0, -Math.cos(RAY_PITCH));
 function animate() {
   const t = clock.getElapsedTime();
 
-  if (forceSettleSteps > 0) {
-    forceStep();
-    forceSettleSteps--;
-  }
+  layoutStep();
 
   for (const n of nodeMap.values()) {
     n.mesh.position.copy(n.pos);

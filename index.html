@@ -80,8 +80,8 @@
   <div id="legend">
     <label class="legend-item" style="color:#00fff2"><input type="checkbox" checked data-filter="unfinalized"><div class="legend-dot" style="color:#00fff2;background:#00fff2"></div> Unfinalized Blocks</label>
     <label class="legend-item" style="color:#ffd700"><input type="checkbox" checked data-filter="finalized"><div class="legend-dot" style="color:#ffd700;background:#ffd700"></div> Finalized Blocks</label>
-    <label class="legend-item" style="color:#ff00ff"><input type="checkbox" checked data-filter="extrinsic"><div class="legend-dot" style="color:#ff00ff;background:#ff00ff"></div> Extrinsics</label>
-    <label class="legend-item" style="color:#66ffcc"><input type="checkbox" checked data-filter="event"><div class="legend-dot" style="color:#66ffcc;background:#66ffcc"></div> Events</label>
+    <label class="legend-item" style="color:#ff00ff"><input type="checkbox" data-filter="extrinsic"><div class="legend-dot" style="color:#ff00ff;background:#ff00ff"></div> Extrinsics</label>
+    <label class="legend-item" style="color:#66ffcc"><input type="checkbox" data-filter="event"><div class="legend-dot" style="color:#66ffcc;background:#66ffcc"></div> Events</label>
     <label class="legend-item" style="color:#4488ff"><input type="checkbox" checked data-filter="cardano"><div class="legend-dot" style="color:#4488ff;background:#4488ff"></div> Cardano Blocks</label>
     <label class="legend-item" style="color:#888"><input type="checkbox" checked data-filter="empty"><div class="legend-dot" style="color:#888;background:#888"></div> Empty Blocks</label>
   </div>
@@ -1218,6 +1218,8 @@ function clearAllState() {
   // Reset state
   selectedNode = null;
   hoveredNode = null;
+  expandedBlocks.clear();
+  expandedExtrinsics.clear();
   lastFinalizedNumber = 0;
   chainName = '';
   palletInfo = null;
@@ -1570,12 +1572,22 @@ window.addEventListener('click', (e) => {
   const target = hoveredNode || findNearestNode(e.clientX, e.clientY, 80);
   if (target) {
     if (selectedNode === target) {
+      // Deselect: collapse children
+      const n = nodeMap.get(target);
+      if (n?.type === 'block') expandedBlocks.delete(target);
+      if (n?.type === 'extrinsic') expandedExtrinsics.delete(target);
       selectedNode = null;
       hideInfo();
+      applyFilters();
     } else {
+      // Select: expand children
+      const n = nodeMap.get(target);
+      if (n?.type === 'block') expandedBlocks.add(target);
+      if (n?.type === 'extrinsic') expandedExtrinsics.add(target);
       selectedNode = target;
       highlightNode(target);
       showInfo(target);
+      applyFilters();
     }
   } else {
     selectedNode = null;
@@ -1668,7 +1680,10 @@ function applyKeyboardMovement(dt) {
 // LEGEND FILTERS
 // ═══════════════════════════════════════════
 
-const visibleFilters = { unfinalized: true, finalized: true, extrinsic: true, event: true, cardano: true, empty: true };
+const visibleFilters = { unfinalized: true, finalized: true, extrinsic: false, event: false, cardano: true, empty: true };
+// Track which blocks/extrinsics are expanded
+const expandedBlocks = new Set();
+const expandedExtrinsics = new Set();
 
 function isBlockEmpty(entry) {
   const bd = blockList.find(b => b.nodeId === entry.id);
@@ -1706,7 +1721,15 @@ function getNodeFilter(entry) {
 function applyFilters() {
   for (const [id, entry] of nodeMap) {
     const filter = getNodeFilter(entry);
-    const visible = filter ? visibleFilters[filter] : true;
+    let visible = filter ? visibleFilters[filter] : true;
+    // Extrinsics: only visible if parent block is expanded (or global filter on)
+    if (visible && entry.type === 'extrinsic' && !visibleFilters.extrinsic) {
+      visible = expandedBlocks.has('block-' + entry.blockNumber);
+    }
+    // Events: only visible if parent extrinsic is expanded (or global filter on)
+    if (visible && entry.type === 'event' && !visibleFilters.event) {
+      visible = expandedExtrinsics.has(entry.parentExtId);
+    }
     entry.mesh.visible = visible;
   }
   // Reposition visible blocks compactly, then rebuild edges

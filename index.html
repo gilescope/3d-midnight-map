@@ -162,13 +162,13 @@ const NETWORKS = [
 let currentNetwork = NETWORKS[1]; // default to preview
 let RPC_URL = currentNetwork.rpc;
 let INDEXER_URL = currentNetwork.indexer;
-const MAX_BLOCKS = 30;
-const WORLD_RADIUS = 25;
-const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
-const BLOCK_ALT = 0.8;
-const EXT_ALT = 1.8;
-const EVENT_ALT = 2.8;
-const CARDANO_ALT = -1.5;
+const MAX_BLOCKS = 10;
+const WORLD_RADIUS = 80;
+const BLOCK_ANGULAR_STEP = 0.12; // radians between blocks along equator
+const BLOCK_ALT = 1.5;
+const EXT_ALT = 3.5;
+const EVENT_ALT = 5.5;
+const CARDANO_ALT = -3;
 const ORBITRON_URL = 'https://fonts.gstatic.com/s/orbitron/v31/yMJRMIlzdpvBhQQL_Qq7dy0.woff2';
 const EVENTS_KEY = '0x26aa394eea5630e07c48ae0c9558cef780d41e5e16056765bc8461851072c9d7'; // System.Events
 
@@ -568,7 +568,7 @@ const scene = new THREE.Scene();
 scene.fog = new THREE.Fog(0x050510, WORLD_RADIUS * 1.5, WORLD_RADIUS * 5);
 
 const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 2000);
-camera.position.set(0, 10, WORLD_RADIUS + 12);
+camera.position.set(0, 20, WORLD_RADIUS + 25);
 
 const renderer = new THREE.WebGLRenderer({ antialias: !isMobile, alpha: false });
 if (!renderer.getContext()) {
@@ -1048,10 +1048,10 @@ function makeStars(count, radius) {
   return geo;
 }
 
-const stars1 = new THREE.Points(makeStars(1500, 80),
+const stars1 = new THREE.Points(makeStars(1500, 250),
   new THREE.PointsMaterial({ color: 0x00fff2, size: 0.15, transparent: true, opacity: 0.4, depthWrite: false })
 );
-const stars2 = new THREE.Points(makeStars(800, 90),
+const stars2 = new THREE.Points(makeStars(800, 280),
   new THREE.PointsMaterial({ color: 0xff00ff, size: 0.1, transparent: true, opacity: 0.25, depthWrite: false })
 );
 scene.add(stars1, stars2);
@@ -1080,13 +1080,12 @@ let nextCardanoSpiral = 0;
 
 function spherePos(index, altitude) {
   const r = WORLD_RADIUS + altitude;
-  const theta = index * GOLDEN_ANGLE;
-  // Spread from north to south: phi from 0.15π to 0.85π
-  const phi = Math.PI * 0.15 + (index * 0.04) % (Math.PI * 0.7);
+  // Blocks line up along the equator
+  const theta = index * BLOCK_ANGULAR_STEP;
   return new THREE.Vector3(
-    r * Math.sin(phi) * Math.cos(theta),
-    r * Math.cos(phi),
-    r * Math.sin(phi) * Math.sin(theta)
+    r * Math.cos(theta),
+    0,
+    r * Math.sin(theta)
   );
 }
 
@@ -1134,7 +1133,7 @@ function networkPosition(name, radius) {
 }
 
 const networkStars = [];
-const STAR_RADIUS = 60;
+const STAR_RADIUS = 200;
 for (const net of NETWORKS) {
   const pos = networkPosition(net.name, STAR_RADIUS);
   const color = networkColor(net.name);

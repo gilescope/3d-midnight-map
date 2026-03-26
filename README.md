@@ -13,13 +13,15 @@ A real-time 3D block explorer for the Midnight preview network, built with Three
 - Extrinsics radiate from their parent block (magenta/orange spheres)
 - Runtime events shown as green (#66ffcc) child nodes of their parent extrinsic
 - Cardano preview blocks (blue) linked to Midnight blocks via mcsh cross-chain references
-- Force-directed 3D layout with gentle spring physics and chain-link edges
+- Blocks laid out on a spherical world surface using golden angle spiral (deterministic positions)
+- Curvature naturally hides distant blocks — orbit the world to explore the chain
+- Force-directed spring physics with sphere surface constraint
 - Backward chain scanner finds blocks with ledger transactions (batched GraphQL, up to 100 tx blocks)
 
 ### Interaction
 
 - Double-click a block to open it in Polkadot.js Apps or CardanoScan
-- Double-click a network star to hyperspace to that blockchain (preview, qanet, devnet)
+- Double-click a network star to hyperspace to that blockchain (mainnet, preview, qanet, devnet)
 - Hover over any node for detailed info panel (block stats, extrinsic size, event fields)
 - Event hover decodes full SCALE-encoded field data (e.g. UnshieldedTokens amounts, addresses)
 - WASD / arrow keys for camera movement, Q/E for vertical, Shift to run (10x speed)
@@ -44,6 +46,7 @@ A real-time 3D block explorer for the Midnight preview network, built with Three
 
 - Cyberpunk aesthetic: bloom, scanlines, particle edges, Orbitron font
 - Neon colour scheme: cyan, gold, magenta, green, blue on dark background
+- Wireframe world sphere with semi-transparent solid core
 - Starfield background with glowing network stars at deterministic positions (FNV-1a hash)
 - Hyperspace jump animation with streak lines and flash transition
 

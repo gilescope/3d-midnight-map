@@ -154,15 +154,21 @@ const HEX = {
 };
 
 const NETWORKS = [
+  { name: 'mainnet', rpc: 'wss://rpc.midnight.network',         indexer: 'https://indexer.midnight.network/api/v3/graphql' },
   { name: 'preview', rpc: 'wss://rpc.preview.midnight.network', indexer: 'https://indexer.preview.midnight.network/api/v3/graphql' },
   { name: 'qanet',   rpc: 'wss://rpc.qanet.midnight.network',   indexer: 'https://indexer.qanet.midnight.network/api/v3/graphql' },
   { name: 'devnet',  rpc: 'wss://rpc.devnet.midnight.network',  indexer: 'https://indexer.devnet.midnight.network/api/v3/graphql' },
 ];
-let currentNetwork = NETWORKS[0];
+let currentNetwork = NETWORKS[1]; // default to preview
 let RPC_URL = currentNetwork.rpc;
 let INDEXER_URL = currentNetwork.indexer;
 const MAX_BLOCKS = 12;
-const BLOCK_SPACING = 6;
+const WORLD_RADIUS = 25;
+const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+const BLOCK_ALT = 0.8;
+const EXT_ALT = 1.8;
+const EVENT_ALT = 2.8;
+const CARDANO_ALT = -1.5;
 const ORBITRON_URL = 'https://fonts.gstatic.com/s/orbitron/v31/yMJRMIlzdpvBhQQL_Qq7dy0.woff2';
 const EVENTS_KEY = '0x26aa394eea5630e07c48ae0c9558cef780d41e5e16056765bc8461851072c9d7'; // System.Events
 
@@ -501,7 +507,7 @@ let edges = [];
 // Cardano block tracking
 const cardanoBlocks = new Map();
 const cardanoBlockList = [];
-const CARDANO_Y_OFFSET = -8;
+// Cardano blocks sit on inner shell of world sphere
 const pendingCardanoFetches = new Map();
 
 function parseMcshDigest(digestLogs) {
@@ -520,7 +526,8 @@ function getOrCreateCardanoNode(hash) {
   const nodeId = 'cardano-' + hash.slice(0, 16);
   const cb = { hash, nodeId, referencedBy: new Set() };
   cardanoBlocks.set(hash, cb);
-  const pos = new THREE.Vector3(0, CARDANO_Y_OFFSET, 0);
+  const idx = cardanoBlockList.length;
+  const pos = spherePos(idx + 200, CARDANO_ALT);
   addNode(nodeId, shortHash(hash), COLORS.cardano, HEX.cardano, 1.0, pos, {
     type: 'cardano', cardanoHash: hash,
   });
@@ -558,10 +565,10 @@ function shortHash(h) {
 const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 
 const scene = new THREE.Scene();
-scene.fog = new THREE.FogExp2(0x050510, 0.004);
+scene.fog = new THREE.Fog(0x050510, WORLD_RADIUS * 1.5, WORLD_RADIUS * 5);
 
 const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 2000);
-camera.position.set(0, 10, 25);
+camera.position.set(0, 15, WORLD_RADIUS + 25);
 
 const renderer = new THREE.WebGLRenderer({ antialias: !isMobile, alpha: false });
 if (!renderer.getContext()) {
@@ -580,9 +587,9 @@ const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.05;
 controls.autoRotate = false;
-controls.minDistance = 1;
-controls.maxDistance = 5000;
-controls.target.set(-15, 0, 0);
+controls.minDistance = WORLD_RADIUS + 5;
+controls.maxDistance = 500;
+controls.target.set(0, 0, 0);
 
 let composer = null;
 if (!isMobile) {
@@ -811,24 +818,20 @@ function addBlock(number, hash, extrinsics, digestLogs, hasLedgerTxs = false) {
   const blockSize = 1.2 + Math.min(extCount * 0.1, 0.8);
   const totalBytes = extrinsics.reduce((sum, hex) => sum + (hex.length - 2) / 2, 0);
 
-  // Block position: newest at x=0, will be shifted
-  const pos = new THREE.Vector3(0, 0, 0);
+  // Block position on sphere surface
+  const spiralIdx = nextSpiralIndex; // will be assigned in repositionBlocks
+  const pos = spherePos(spiralIdx, BLOCK_ALT);
   addNode(blockId, '#' + number, COLORS.block, HEX.block, blockSize, pos, {
     type: 'block', blockNumber: number, blockHash: hash, extCount, totalBytes,
   });
 
-  // Extrinsic nodes
+  // Extrinsic nodes positioned in tangent plane above block
   for (let i = 0; i < extCount; i++) {
     const extId = 'ext-' + number + '-' + i;
     const extHex = extrinsics[i];
     const extBytes = (extHex.length - 2) / 2;
     const angle = (i / extCount) * Math.PI * 2;
-    const radius = 2 + Math.random();
-    const extPos = new THREE.Vector3(
-      radius * Math.cos(angle),
-      radius * Math.sin(angle),
-      (Math.random() - 0.5) * 2
-    );
+    const extPos = tangentOffset(pos, angle, 2.5, EXT_ALT);
     const callName = formatCallName(extHex);
     addNode(extId, callName || ('Ext ' + i), COLORS.extrinsic, HEX.extrinsic, 0.5, extPos, {
       type: 'extrinsic', extIndex: i, extBytes, extHex, blockNumber: number, callName,
@@ -894,12 +897,7 @@ function addBlock(number, hash, extrinsics, digestLogs, hasLedgerTxs = false) {
         const ev = evts[j];
         const evId = 'evt-' + number + '-' + extIdx + '-' + j;
         const angle = (j / evts.length) * Math.PI * 2;
-        const r2 = 1.2 + Math.random() * 0.4;
-        const evPos = new THREE.Vector3(
-          parentEntry.pos.x + r2 * Math.cos(angle),
-          parentEntry.pos.y + r2 * Math.sin(angle),
-          parentEntry.pos.z + (Math.random() - 0.5)
-        );
+        const evPos = tangentOffset(parentEntry.pos, angle, 1.2, EVENT_ALT);
         addNode(evId, ev.name.split('.')[1] || ev.name, COLORS.event, HEX.event, 0.35, evPos, {
           type: 'event', eventName: ev.name, blockNumber: number, extIndex: extIdx,
           parentExtId, fieldHex: ev.fieldHex, fieldTypes: ev.fieldTypes,
@@ -920,31 +918,25 @@ function addBlock(number, hash, extrinsics, digestLogs, hasLedgerTxs = false) {
 }
 
 function repositionBlocks() {
-  let visIdx = 0;
   for (let i = 0; i < blockList.length; i++) {
     const bd = blockList[i];
     const entry = nodeMap.get(bd.nodeId);
     if (!entry) continue;
-    if (!entry.mesh.visible) { entry.targetX = undefined; continue; }
-    const targetX = -visIdx * BLOCK_SPACING;
-    entry.targetX = targetX;
-    visIdx++;
+    if (!entry.mesh.visible) { entry.targetPos = undefined; continue; }
+    // Assign spiral index once
+    if (bd.spiralIndex === undefined) bd.spiralIndex = nextSpiralIndex++;
+    const target = spherePos(bd.spiralIndex, BLOCK_ALT);
+    entry.targetPos = target;
     // Set initial position for new nodes
-    if (i === 0 && Math.abs(entry.pos.x) < 0.01 && Math.abs(entry.pos.y) < 0.01) {
-      entry.pos.x = targetX;
-    }
-    // Position extrinsics relative to block
+    if (entry.pos.length() < 1) entry.pos.copy(target);
+    // Position extrinsics in tangent plane above block
     for (let j = 0; j < bd.extNodeIds.length; j++) {
       const extEntry = nodeMap.get(bd.extNodeIds[j]);
       if (!extEntry) continue;
       extEntry.parentBlockId = bd.nodeId;
-      // Offset extrinsic position from block
-      if (extEntry.pos.length() < 3) {
+      if (extEntry.pos.length() < 1) {
         const angle = (j / bd.extNodeIds.length) * Math.PI * 2;
-        const r = 2.5 + Math.random() * 0.5;
-        extEntry.pos.x = targetX + r * Math.cos(angle);
-        extEntry.pos.y = r * Math.sin(angle);
-        extEntry.pos.z = (Math.random() - 0.5) * 2;
+        extEntry.pos.copy(tangentOffset(target, angle, 2.5, EXT_ALT));
       }
     }
   }
@@ -955,8 +947,8 @@ function repositionCardanoBlocks() {
     const cb = cardanoBlockList[i];
     const entry = nodeMap.get(cb.nodeId);
     if (!entry) continue;
-    entry.targetX = -i * BLOCK_SPACING;
-    entry.targetY = CARDANO_Y_OFFSET;
+    if (cb.spiralIndex === undefined) cb.spiralIndex = nextCardanoSpiral++;
+    entry.targetPos = spherePos(cb.spiralIndex + 200, CARDANO_ALT); // offset index to avoid overlap
   }
 }
 
@@ -1052,9 +1044,61 @@ const stars2 = new THREE.Points(makeStars(800, 90),
 );
 scene.add(stars1, stars2);
 
+// World sphere
+const worldGeo = new THREE.IcosahedronGeometry(WORLD_RADIUS, 4);
+const worldWire = new THREE.Mesh(worldGeo, new THREE.MeshBasicMaterial({
+  color: 0x00fff2, wireframe: true, transparent: true, opacity: 0.04,
+  blending: THREE.AdditiveBlending, depthWrite: false,
+}));
+const worldSolid = new THREE.Mesh(
+  new THREE.SphereGeometry(WORLD_RADIUS - 0.1, 48, 24),
+  new THREE.MeshStandardMaterial({
+    color: 0x050520, transparent: true, opacity: 0.4,
+    roughness: 0.9, metalness: 0.1,
+  })
+);
+graphGroup.add(worldWire, worldSolid);
+
 // ═══════════════════════════════════════════
 // NETWORK STARS — deterministic position from name hash
 // ═══════════════════════════════════════════
+
+// Sphere surface position using golden angle spiral
+let nextSpiralIndex = 0;
+let nextCardanoSpiral = 0;
+
+function spherePos(index, altitude) {
+  const r = WORLD_RADIUS + altitude;
+  const theta = index * GOLDEN_ANGLE;
+  // Spread from north to south: phi from 0.15π to 0.85π
+  const phi = Math.PI * 0.15 + (index * 0.04) % (Math.PI * 0.7);
+  return new THREE.Vector3(
+    r * Math.sin(phi) * Math.cos(theta),
+    r * Math.cos(phi),
+    r * Math.sin(phi) * Math.sin(theta)
+  );
+}
+
+// Get tangent-plane offset at a sphere point
+const _up = new THREE.Vector3(0, 1, 0);
+const _tangent = new THREE.Vector3();
+const _bitangent = new THREE.Vector3();
+
+function tangentOffset(center, angle, dist, altitude) {
+  const normal = center.clone().normalize();
+  // Build tangent frame
+  const ref = Math.abs(normal.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : _up;
+  _tangent.crossVectors(normal, ref).normalize();
+  _bitangent.crossVectors(normal, _tangent).normalize();
+  const pos = center.clone().add(
+    _tangent.clone().multiplyScalar(Math.cos(angle) * dist)
+  ).add(
+    _bitangent.clone().multiplyScalar(Math.sin(angle) * dist)
+  );
+  // Ensure correct altitude above sphere
+  pos.normalize().multiplyScalar(WORLD_RADIUS + altitude);
+  return pos;
+}
 
 function hashStr(s) {
   let h = 0x811c9dc5;
@@ -1155,6 +1199,9 @@ function clearAllState() {
   for (const id of ids) removeNode(id);
   blockList.length = 0;
   cardanoBlockList.length = 0;
+  cardanoBlocks.clear();
+  nextSpiralIndex = 0;
+  nextCardanoSpiral = 0;
   // Reset state
   selectedNode = null;
   hoveredNode = null;
@@ -1292,22 +1339,25 @@ function forceStep() {
     const d = _diff.length();
     const crossChain = (s.type === 'block' && t.type === 'cardano') || (s.type === 'cardano' && t.type === 'block');
     const chainLink = (s.type === 'block' && t.type === 'block') || (s.type === 'cardano' && t.type === 'cardano');
-    const rest = chainLink ? BLOCK_SPACING : crossChain ? Math.abs(CARDANO_Y_OFFSET) : 2.5;
+    const rest = chainLink ? 4 : crossChain ? 3 : 2.5;
     const f = attraction * (d - rest);
     _diff.normalize().multiplyScalar(f);
     s.vel.add(_diff);
     t.vel.sub(_diff);
   }
 
-  // Block positioning force: pull blocks toward their target X, center Y/Z
+  // Pull nodes toward their sphere-surface targets
   for (const n of allNodes) {
-    if (n.targetX !== undefined) {
-      n.vel.x += (n.targetX - n.pos.x) * 0.05;
-      n.vel.y += ((n.targetY !== undefined ? n.targetY : 0) - n.pos.y) * 0.01;
-      n.vel.z += (0 - n.pos.z) * 0.01;
+    if (n.targetPos) {
+      _diff.subVectors(n.targetPos, n.pos).multiplyScalar(0.05);
+      n.vel.add(_diff);
     }
     n.vel.multiplyScalar(damping);
     n.pos.add(n.vel);
+    // Constrain all nodes to stay above sphere surface
+    const dist = n.pos.length();
+    const minR = WORLD_RADIUS + 0.3;
+    if (dist < minR) n.pos.multiplyScalar(minR / dist);
   }
 }
 
@@ -1674,7 +1724,10 @@ function animate() {
 
   for (const n of nodeMap.values()) {
     n.mesh.position.copy(n.pos);
-    n.mesh.position.y += Math.sin(t * 0.15 + n.phase) * 0.04;
+    // Bob along sphere normal
+    const bobNorm = n.pos.clone().normalize();
+    const bob = Math.sin(t * 0.15 + n.phase) * 0.04;
+    n.mesh.position.addScaledVector(bobNorm, bob);
     n.mesh.rotation.y = t * 0.08 + n.phase;
     n.mesh.rotation.x = Math.sin(t * 0.1 + n.phase) * 0.05;
     n.glow.material.opacity = 0.5 + 0.15 * Math.sin(t * 1.5 + n.phase);

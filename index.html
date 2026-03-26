@@ -162,7 +162,7 @@ const NETWORKS = [
 let currentNetwork = NETWORKS[1]; // default to preview
 let RPC_URL = currentNetwork.rpc;
 let INDEXER_URL = currentNetwork.indexer;
-const MAX_BLOCKS = 12;
+const MAX_BLOCKS = 30;
 const WORLD_RADIUS = 25;
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 const BLOCK_ALT = 0.8;
@@ -846,6 +846,18 @@ function addBlock(number, hash, extrinsics, digestLogs, hasLedgerTxs = false) {
   else blockList.splice(insertIdx, 0, bd);
   console.log('Blocks:', blockList.length, 'Nodes:', nodeMap.size, 'Block:', number);
 
+  // Trim oldest blocks if over limit
+  while (blockList.length > MAX_BLOCKS) {
+    const old = blockList.pop();
+    removeNode(old.nodeId);
+    for (const eid of old.extNodeIds) removeNode(eid);
+    if (old.eventNodeIds) for (const evId of old.eventNodeIds) removeNode(evId);
+    if (old.cardanoNodeId) {
+      const ch = cardanoBlocks.get(old.cardanoHash);
+      if (ch) { ch.referencedBy.delete(old.number); if (ch.referencedBy.size === 0) { removeNode(ch.nodeId); cardanoBlocks.delete(old.cardanoHash); const ci = cardanoBlockList.findIndex(c => c.nodeId === ch.nodeId); if (ci >= 0) cardanoBlockList.splice(ci, 1); } }
+    }
+  }
+
   // Check if already finalized
   if (number <= lastFinalizedNumber) {
     bd.finalized = true;
@@ -1345,18 +1357,27 @@ function forceStep() {
     t.vel.sub(_diff);
   }
 
-  // Pull nodes toward their sphere-surface targets
+  // Pull nodes toward their sphere-surface targets + gravity to surface
   for (const n of allNodes) {
     if (n.targetPos) {
       _diff.subVectors(n.targetPos, n.pos).multiplyScalar(0.05);
       n.vel.add(_diff);
     }
+    // Gravity: pull toward correct altitude above sphere
+    const dist = n.pos.length();
+    const alt = n.type === 'event' ? EVENT_ALT : n.type === 'extrinsic' ? EXT_ALT :
+      n.type === 'cardano' ? CARDANO_ALT : BLOCK_ALT;
+    const targetR = WORLD_RADIUS + alt;
+    const radialForce = (targetR - dist) * 0.1;
+    const normal = n.pos.clone().normalize();
+    n.vel.addScaledVector(normal, radialForce);
+
     n.vel.multiplyScalar(damping);
     n.pos.add(n.vel);
-    // Constrain all nodes to stay above sphere surface
-    const dist = n.pos.length();
-    const minR = WORLD_RADIUS + 0.3;
-    if (dist < minR) n.pos.multiplyScalar(minR / dist);
+    // Hard constraint: never inside sphere
+    const newDist = n.pos.length();
+    const minR = WORLD_RADIUS + 0.2;
+    if (newDist < minR) n.pos.multiplyScalar(minR / newDist);
   }
 }
 
@@ -1904,7 +1925,7 @@ async function scanBackward(startHeight) {
   const stride = BATCH_SIZE * PARALLEL; // 500 blocks per round
   let totalFound = 0;
 
-  const MAX_TX_BLOCKS = 100;
+  const MAX_TX_BLOCKS = 20;
   console.log('Scanner: scanning backward from', startHeight, '(max', MAX_TX_BLOCKS, 'tx blocks)');
 
   for (let h = startHeight; h >= 1 && !controller.signal.aborted && totalFound < MAX_TX_BLOCKS; h -= stride) {

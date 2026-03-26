@@ -1053,8 +1053,7 @@ const worldWire = new THREE.Mesh(worldGeo, new THREE.MeshBasicMaterial({
 const worldSolid = new THREE.Mesh(
   new THREE.SphereGeometry(WORLD_RADIUS - 0.1, 48, 24),
   new THREE.MeshStandardMaterial({
-    color: 0x050520, transparent: true, opacity: 0.4,
-    roughness: 0.9, metalness: 0.1,
+    color: 0x050520, roughness: 0.9, metalness: 0.1,
   })
 );
 graphGroup.add(worldWire, worldSolid);

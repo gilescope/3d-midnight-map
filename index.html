@@ -568,7 +568,9 @@ const scene = new THREE.Scene();
 scene.fog = new THREE.Fog(0x050510, WORLD_RADIUS * 1.5, WORLD_RADIUS * 5);
 
 const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 2000);
-camera.position.set(0, 20, WORLD_RADIUS + 25);
+// Stand on surface behind block 0, looking along equator toward new blocks
+// Block 0 is at angle 0 (+X axis), blocks advance with positive theta (+Z)
+camera.position.set(WORLD_RADIUS + 3, 3, -8);
 
 const renderer = new THREE.WebGLRenderer({ antialias: !isMobile, alpha: false });
 if (!renderer.getContext()) {
@@ -587,9 +589,10 @@ const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.05;
 controls.autoRotate = false;
-controls.minDistance = WORLD_RADIUS + 5;
+controls.minDistance = WORLD_RADIUS + 1;
 controls.maxDistance = 500;
-controls.target.set(0, 0, 0);
+// Look along the equator toward the block chain
+controls.target.set(WORLD_RADIUS + 3, 2, 10);
 
 let composer = null;
 if (!isMobile) {
